@@ -13,6 +13,7 @@ Then open http://127.0.0.1:8765/ in a browser.
 """
 import json
 import threading
+import time
 import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,6 +35,7 @@ def run_job(job_id, url, model_size):
         with jobs_lock:
             jobs[job_id].update(kwargs)
 
+    t0 = time.time()
     try:
         result = yt_sync.process_video(
             url, model_size, out_dir=OUTPUT_DIR,
@@ -49,6 +51,7 @@ def run_job(job_id, url, model_size):
                 "sentences": len(sync_data["sentences"]),
                 "duration": sync_data["duration"],
                 "used_captions": result["used_captions"],
+                "elapsed_seconds": time.time() - t0,
             }
         )
     except Exception as e:
