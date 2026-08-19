@@ -95,6 +95,9 @@
     <button id="btnSaveKey">儲存 Key</button>
   </div>
   <div class="note">用來點句子顯示中文翻譯。Key 只存在這台裝置的瀏覽器裡，不會上傳到任何地方。</div>
+  <div class="pickers">
+    <button id="btnTranslateAll" disabled>🌐 全文翻譯</button>
+  </div>
   <div class="status" id="status"></div>
 
   <div class="repeat-status hidden" id="repeatStatus"></div>
@@ -119,6 +122,7 @@
   const syncInput = document.getElementById('syncInput');
   const statusEl = document.getElementById('status');
   const repeatStatusEl = document.getElementById('repeatStatus');
+  const btnTranslateAll = document.getElementById('btnTranslateAll');
   const transcriptEl = document.getElementById('transcript');
   const audio = document.getElementById('audio');
   const btnPlayPause = document.getElementById('btnPlayPause');
@@ -134,6 +138,7 @@
 
   let flatWords = []; // { el, start, end }
   let sentenceEls = []; // { el, start, end }
+  let translationRefs = []; // { text, lineEl }
   let currentWordIdx = -1;
   let currentSentenceIdx = -1;
   let repeatRange = null; // { startIdx, endIdx, playStart, playEnd } - the word/phrase/sentence being looped
@@ -193,6 +198,98 @@
     return zh;
   }
 
+  function chunkArr(arr, size){
+    const out = [];
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
+  }
+
+  // Translates a batch of sentences in one request instead of one round-trip
+  // per sentence -- much faster/cheaper for "translate the whole transcript"
+  // than looping translateSentence() over every line individually.
+  async function translateSentencesBatch(texts){
+    const key = getApiKey();
+    if (!key) throw new Error("請先在上面輸入並儲存 Anthropic API Key");
+    const list = texts.map((t, i) => `${i + 1}. ${t}`).join('\n');
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({
+        model: "claude-opus-4-8",
+        max_tokens: 4096,
+        output_config: {
+          format: {
+            type: "json_schema",
+            schema: {
+              type: "object",
+              properties: {
+                translations: { type: "array", items: { type: "string" } }
+              },
+              required: ["translations"],
+              additionalProperties: false
+            }
+          }
+        },
+        messages: [{
+          role: "user",
+          content: `把下面每一句英文翻譯成自然、口語的繁體中文。請依照輸入的順序，每一句對應輸出一筆翻譯，不要合併、不要省略、數量要跟輸入一致：\n\n${list}`
+        }]
+      })
+    });
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`HTTP ${res.status}: ${errBody.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    const block = (data.content || []).find((b) => b.type === "text");
+    if (!block) throw new Error("沒有收到翻譯內容");
+    const parsed = JSON.parse(block.text);
+    return parsed.translations;
+  }
+
+  btnTranslateAll.addEventListener('click', async () => {
+    if (translationRefs.length === 0) return;
+
+    const alreadyShown = translationRefs.every((r) => !r.lineEl.classList.contains('hidden'));
+    if (alreadyShown) {
+      translationRefs.forEach((r) => r.lineEl.classList.add('hidden'));
+      return;
+    }
+
+    const originalLabel = btnTranslateAll.textContent;
+    btnTranslateAll.disabled = true;
+    try {
+      const missing = translationRefs.filter((r) => !translationCache[r.text]);
+      const batches = chunkArr(missing, 20);
+      let done = 0;
+      for (const batch of batches) {
+        btnTranslateAll.textContent = `翻譯中... (${done}/${missing.length})`;
+        const translations = await translateSentencesBatch(batch.map((r) => r.text));
+        batch.forEach((r, i) => {
+          if (translations[i] === undefined) return;
+          translationCache[r.text] = translations[i];
+        });
+        saveTranslationCache();
+        done += batch.length;
+      }
+      translationRefs.forEach((r) => {
+        r.lineEl.classList.remove('hidden');
+        r.lineEl.textContent = translationCache[r.text] || '（翻譯失敗）';
+        r.lineEl.dataset.loaded = '1';
+      });
+    } catch (err) {
+      alert('全文翻譯失敗：' + err.message);
+    } finally {
+      btnTranslateAll.disabled = false;
+      btnTranslateAll.textContent = originalLabel;
+    }
+  });
+
   function formatTime(s){
     if (!isFinite(s)) return '0:00';
     const m = Math.floor(s / 60);
@@ -237,10 +334,12 @@
     transcriptEl.innerHTML = '';
     flatWords = [];
     sentenceEls = [];
+    translationRefs = [];
     currentWordIdx = -1;
     currentSentenceIdx = -1;
     repeatRange = null;
     updateRepeatStatus();
+    btnTranslateAll.disabled = false;
     data.sentences.forEach((sentence) => {
       const sEl = document.createElement('p');
       sEl.className = 'sentence';
@@ -298,6 +397,7 @@
       });
 
       sentenceEls.push({ el: sEl, start: sentence.start, end: sentence.end });
+      translationRefs.push({ text: sentence.text, lineEl: translationLine });
     });
   }
 
