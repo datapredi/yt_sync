@@ -93,21 +93,43 @@ def run_yt_dlp(args, **kwargs):
 
 
 def download_audio(url, out_dir):
+    """Downloads audio and, in the SAME yt-dlp invocation, requests any
+    manually-uploaded (human, not auto-generated) English subtitles --
+    folding it into this call instead of a separate one avoids a whole
+    extra webpage-extraction + PO-token round-trip per video, which was
+    making the pipeline noticeably slower for no benefit. Returns the vtt
+    path too (None if this video doesn't have manual captions).
+
+    Audio is encoded CBR (constant bitrate), not yt-dlp's VBR default
+    (--audio-quality 0 maps to LAME's variable-bitrate mode). Confirmed by
+    comparing frame sizes with ffprobe: the Power English course's mp3s
+    (which never show playback-desync on repeat) have an identical frame
+    size on every single frame -- true CBR; this pipeline's VBR output
+    had wildly varying frame sizes. VBR mp3 seeking is inherently
+    imprecise in many decoders (no reliable byte-offset<->time mapping
+    without parsing a seek table), which repeated programmatic seeking
+    (exactly what sentence-repeat does) exposes -- forward-only playback
+    never seeks at all, so it stayed accurate the whole time, matching
+    exactly what was reported. CBR seeking is a direct, exact
+    offset = time * bitrate/8 computation, no estimation involved."""
     ensure_pot_server()
     title = run_yt_dlp(["--get-title", url]).strip()
     safe_title = sanitize_filename(title)
     audio_path = out_dir / f"{safe_title}.mp3"
+    vtt_path = out_dir / f"{safe_title}.en.vtt"
+
     if audio_path.exists():
         print(f"Audio already downloaded: {audio_path}")
-        return audio_path, safe_title
+        return audio_path, safe_title, (vtt_path if vtt_path.exists() else None)
 
     print(f"Downloading audio: {title}")
     run_yt_dlp([
-        "-x", "--audio-format", "mp3", "--audio-quality", "0",
+        "-x", "--audio-format", "mp3", "--audio-quality", "192K",
+        "--write-subs", "--sub-langs", "en", "--sub-format", "vtt",
         "-o", str(out_dir / f"{safe_title}.%(ext)s"),
         url
     ])
-    return audio_path, safe_title
+    return audio_path, safe_title, (vtt_path if vtt_path.exists() else None)
 
 
 VTT_TIMESTAMP_RE = re.compile(r"-->")
@@ -143,33 +165,6 @@ def parse_vtt_to_text(vtt_path):
         if not deduped or deduped[-1] != t:
             deduped.append(t)
     return " ".join(deduped)
-
-
-def fetch_manual_subtitles_text(url, tmp_dir):
-    """Downloads YouTube's manually-uploaded (human, not auto-generated)
-    English subtitles if available, returns the caption text or None if
-    this video doesn't have any. Deliberately does NOT fall back to
-    auto-generated captions -- those are themselves ASR output, no more
-    trustworthy as ground truth than Whisper's own transcription."""
-    out_tmpl = str(tmp_dir / "_captions_tmp")
-    try:
-        run_yt_dlp([
-            "--write-subs", "--skip-download", "--sub-langs", "en",
-            "--sub-format", "vtt",
-            "-o", out_tmpl,
-            url
-        ])
-    except RuntimeError:
-        return None
-
-    vtt_path = tmp_dir / "_captions_tmp.en.vtt"
-    if not vtt_path.exists():
-        return None
-    try:
-        text = parse_vtt_to_text(vtt_path)
-        return text if text.strip() else None
-    finally:
-        vtt_path.unlink(missing_ok=True)
 
 
 def group_into_sentences(words):
@@ -261,18 +256,20 @@ def process_video(url, model_size="small", out_dir=None, on_progress=None):
         if on_progress:
             on_progress(msg)
 
-    progress("正在下載音檔...")
-    audio_path, safe_title = download_audio(url, out_dir)
+    progress("正在下載音檔（會順便檢查有沒有官方字幕）...")
+    audio_path, safe_title, vtt_path = download_audio(url, out_dir)
 
     progress(f"正在載入 Whisper 模型（{model_size}），第一次會比較久...")
     words, duration = transcribe(audio_path, model_size)
 
-    progress("正在檢查有沒有官方字幕可以校正時間軸...")
     caption_text = None
-    try:
-        caption_text = fetch_manual_subtitles_text(url, out_dir)
-    except Exception as e:
-        print(f"Could not fetch captions ({e}), falling back to Whisper-only text.")
+    if vtt_path:
+        try:
+            caption_text = parse_vtt_to_text(vtt_path)
+            if not caption_text.strip():
+                caption_text = None
+        except Exception as e:
+            print(f"Could not parse captions ({e}), falling back to Whisper-only text.")
 
     if caption_text:
         progress("找到官方字幕，用它校正 Whisper 的時間，準確度會比純 Whisper 高。")
