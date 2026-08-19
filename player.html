@@ -340,6 +340,16 @@
     repeatRange = null;
     updateRepeatStatus();
     btnTranslateAll.disabled = false;
+    // Whisper's word timestamps aren't always strictly increasing (small
+    // overlaps/backslides happen at segment boundaries). findWordIndex()
+    // does a binary search assuming non-decreasing start times, and
+    // computeRepeatBounds() assumes neighboring words don't overlap --
+    // both silently break (highlight jumps to an unrelated word) once you
+    // seek/repeat into a region where that assumption doesn't hold, even
+    // though forward linear playback mostly hides it. Clamp each word's
+    // timing to never start before the previous word ended, once here at
+    // load time, so every lookup downstream can rely on strict ordering.
+    let lastEnd = 0;
     data.sentences.forEach((sentence) => {
       const sEl = document.createElement('p');
       sEl.className = 'sentence';
@@ -364,7 +374,10 @@
         wEl.textContent = w.text + (i < sentence.words.length - 1 ? ' ' : '');
         wEl.addEventListener('click', () => handleWordTap(wordIdx));
         sEl.appendChild(wEl);
-        flatWords.push({ el: wEl, start: w.start, end: w.end });
+        const start = Math.max(w.start, lastEnd);
+        const end = Math.max(w.end, start);
+        lastEnd = end;
+        flatWords.push({ el: wEl, start, end });
       });
       const sentEndIdx = flatWords.length - 1;
       repeatBtn.addEventListener('click', (e) => {
@@ -396,7 +409,9 @@
         }
       });
 
-      sentenceEls.push({ el: sEl, start: sentence.start, end: sentence.end });
+      // Use the clamped word timings (not the raw sentence.start/end from the
+      // JSON) so sentence-level highlighting stays consistent with word-level.
+      sentenceEls.push({ el: sEl, start: flatWords[sentStartIdx].start, end: flatWords[sentEndIdx].end });
       translationRefs.push({ text: sentence.text, lineEl: translationLine });
     });
   }
