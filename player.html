@@ -709,16 +709,36 @@
     }
   }
 
+  // The rAF loop below is what gives smooth, frame-by-frame highlight
+  // tracking, but it's a hand-rolled recursive chain: each tick() call has
+  // to re-schedule the next one itself, and it only ever gets (re)started
+  // by a genuine 'play' event. Repeated programmatic seeking (exactly what
+  // sentence-repeat looping does, over and over) can trip up some mobile
+  // browsers into a transient paused-like state for a single frame without
+  // firing a real 'pause'/'play' event pair around it -- if that happens on
+  // the frame tick() checks audio.paused, the chain silently dies and
+  // nothing ever restarts it (the highlight then just freezes while
+  // playback keeps going, drifting further and further out of sync the
+  // longer it plays, since nothing is watching for "did the last chain
+  // actually keep running").
+  //
+  // Fix is two-part: 'timeupdate' (fires from the browser's own native
+  // playback clock, fires regardless of whatever state our rAF chain is
+  // in) independently drives updateHighlight too, as a lower-frequency but
+  // unkillable fallback; and it also acts as a watchdog -- if too long has
+  // passed since tick() last actually ran while audio is still genuinely
+  // playing, that means the rAF chain died, so restart it.
+  let lastTickTime = 0;
   function tick(){
-    if (!audio.paused) {
-      if (repeatRange && audio.currentTime >= repeatRange.playEnd) {
-        audio.currentTime = repeatRange.playStart;
-      }
-      updateHighlight(audio.currentTime);
-      requestAnimationFrame(tick);
+    if (audio.paused) return;
+    lastTickTime = performance.now();
+    if (repeatRange && audio.currentTime >= repeatRange.playEnd) {
+      audio.currentTime = repeatRange.playStart;
     }
+    updateHighlight(audio.currentTime);
+    requestAnimationFrame(tick);
   }
-  audio.addEventListener('play', () => { btnPlayPause.textContent = '⏸️'; requestAnimationFrame(tick); });
+  audio.addEventListener('play', () => { btnPlayPause.textContent = '⏸️'; lastTickTime = performance.now(); requestAnimationFrame(tick); });
   audio.addEventListener('pause', () => { btnPlayPause.textContent = '▶️'; });
   audio.addEventListener('seeked', () => updateHighlight(audio.currentTime));
   audio.addEventListener('loadedmetadata', () => {
@@ -728,6 +748,8 @@
   audio.addEventListener('timeupdate', () => {
     seekBar.value = audio.currentTime;
     timeLabel.textContent = `${formatTime(audio.currentTime)} / ${formatTime(audio.duration)}`;
+    updateHighlight(audio.currentTime);
+    if (!audio.paused && performance.now() - lastTickTime > 500) requestAnimationFrame(tick);
   });
 
   btnPlayPause.addEventListener('click', () => {
