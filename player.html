@@ -77,6 +77,16 @@
     font-size:0.78rem; padding:4px 10px; border-radius:8px; border:1px solid var(--accent);
     background:var(--card); color:var(--text); cursor:pointer;
   }
+  .word.search-hit{background:#c9a7ff; color:#1f1b16;}
+  @media (prefers-color-scheme: dark){ .word.search-hit{background:#7a4fd6; color:#f2ede4;} }
+  .word.search-current{outline:2px solid #7a1fd6; outline-offset:1px; font-weight:700;}
+  .search-bar{display:flex; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap;}
+  .search-bar input[type=text]{
+    flex:1 1 160px; font-family:inherit; font-size:0.9rem; padding:10px 14px; border-radius:10px;
+    border:1px solid var(--border); background:var(--card); color:var(--text);
+  }
+  .search-bar button{flex:0 0 auto;}
+  .search-count{font-size:0.8rem; color:var(--muted); flex:0 0 auto; white-space:nowrap;}
   .empty{color:var(--muted); text-align:center; padding:40px 20px;}
   .player-bar{
     position:fixed; left:0; right:0; bottom:0; background:var(--card); border-top:1px solid var(--border);
@@ -113,6 +123,12 @@
     <button id="btnPickMode" disabled>🔤 選字模式：關</button>
   </div>
   <div class="note">選字模式開著的時候，點字是「選取這個字」不是重複播放；選好之後可以一次複製，貼去問 AI 或存進 Obsidian。</div>
+  <div class="search-bar">
+    <input type="text" id="searchInput" placeholder="搜尋逐字稿裡的字..." disabled>
+    <button id="btnSearchPrev" disabled>◀</button>
+    <button id="btnSearchNext" disabled>▶</button>
+    <span class="search-count" id="searchCount"></span>
+  </div>
   <div class="status" id="status"></div>
 
   <div class="repeat-status hidden" id="repeatStatus"></div>
@@ -141,6 +157,10 @@
   const pickStatusEl = document.getElementById('pickStatus');
   const btnTranslateAll = document.getElementById('btnTranslateAll');
   const btnPickMode = document.getElementById('btnPickMode');
+  const searchInput = document.getElementById('searchInput');
+  const btnSearchPrev = document.getElementById('btnSearchPrev');
+  const btnSearchNext = document.getElementById('btnSearchNext');
+  const searchCountEl = document.getElementById('searchCount');
   const transcriptEl = document.getElementById('transcript');
   const audio = document.getElementById('audio');
   const btnPlayPause = document.getElementById('btnPlayPause');
@@ -162,6 +182,8 @@
   let repeatRange = null; // { startIdx, endIdx, playStart, playEnd } - the word/phrase/sentence being looped
   let pickMode = false;
   let pickedIndices = new Set(); // indices into flatWords the user has tapped to pick out
+  let searchMatches = []; // indices into flatWords matching the current search query
+  let currentMatchIdx = -1; // index into searchMatches, not into flatWords
 
   // Same localStorage key as the indonesian-flashcard site / mp3_looper's
   // sync.html (same origin conventions) - a key saved on any of them works
@@ -361,8 +383,15 @@
     updateRepeatStatus();
     pickedIndices = new Set();
     updatePickStatus();
+    searchMatches = [];
+    currentMatchIdx = -1;
+    searchInput.value = '';
+    searchCountEl.textContent = '';
     btnTranslateAll.disabled = false;
     btnPickMode.disabled = false;
+    searchInput.disabled = false;
+    btnSearchPrev.disabled = true;
+    btnSearchNext.disabled = true;
     // Whisper's word timestamps aren't always strictly increasing (small
     // overlaps/backslides happen at segment boundaries). findWordIndex()
     // does a binary search assuming non-decreasing start times, and
@@ -510,6 +539,63 @@
     btnPickMode.textContent = pickMode ? '🔤 選字模式：開' : '🔤 選字模式：關';
     btnPickMode.classList.toggle('on', pickMode);
   });
+
+  function normalizeForSearch(text){
+    return text.toLowerCase().replace(/[^a-z0-9']/g, '');
+  }
+
+  // Substring match (not exact-word-only) so searching "ish" also finds
+  // "stylish"/"British" etc. -- deliberately loose, this is a "help me find
+  // where I heard this" tool, not a strict word-boundary search.
+  function performSearch(query){
+    searchMatches.forEach((idx) => flatWords[idx].el.classList.remove('search-hit', 'search-current'));
+    searchMatches = [];
+    currentMatchIdx = -1;
+
+    const q = normalizeForSearch(query.trim());
+    if (!q) {
+      searchCountEl.textContent = '';
+      btnSearchPrev.disabled = true;
+      btnSearchNext.disabled = true;
+      return;
+    }
+
+    flatWords.forEach((w, idx) => {
+      if (normalizeForSearch(w.text).includes(q)) {
+        searchMatches.push(idx);
+        w.el.classList.add('search-hit');
+      }
+    });
+
+    if (searchMatches.length === 0) {
+      searchCountEl.textContent = '沒有找到';
+      btnSearchPrev.disabled = true;
+      btnSearchNext.disabled = true;
+      return;
+    }
+    btnSearchPrev.disabled = false;
+    btnSearchNext.disabled = false;
+    gotoMatch(0);
+  }
+
+  function gotoMatch(newIdx){
+    if (searchMatches.length === 0) return;
+    if (currentMatchIdx >= 0) flatWords[searchMatches[currentMatchIdx]].el.classList.remove('search-current');
+    currentMatchIdx = ((newIdx % searchMatches.length) + searchMatches.length) % searchMatches.length;
+    const el = flatWords[searchMatches[currentMatchIdx]].el;
+    el.classList.add('search-current');
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    searchCountEl.textContent = `${currentMatchIdx + 1} / ${searchMatches.length}`;
+  }
+
+  searchInput.addEventListener('input', () => performSearch(searchInput.value));
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (searchMatches.length > 0) gotoMatch(currentMatchIdx + (e.shiftKey ? -1 : 1));
+  });
+  btnSearchPrev.addEventListener('click', () => gotoMatch(currentMatchIdx - 1));
+  btnSearchNext.addEventListener('click', () => gotoMatch(currentMatchIdx + 1));
 
   // Tapping a word: no active repeat -> repeat just this word.
   // Tap a word outside the current repeat range -> extend range to cover it (phrase/sentence repeat).
