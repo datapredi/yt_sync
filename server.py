@@ -35,27 +35,20 @@ def run_job(job_id, url, model_size):
             jobs[job_id].update(kwargs)
 
     try:
-        set_state(stage="download", message="正在下載音檔...")
-        audio_path, safe_title = yt_sync.download_audio(url, OUTPUT_DIR)
-
-        set_state(stage="transcribe", message=f"正在載入 Whisper 模型（{model_size}），第一次會比較久...")
-        words, duration = yt_sync.transcribe(audio_path, model_size)
-
-        set_state(stage="build", message="正在整理逐字稿...")
-        sync_data = yt_sync.build_sync_json(words, duration)
-
-        json_path = OUTPUT_DIR / f"{safe_title}.json"
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(sync_data, f, ensure_ascii=False, indent=2)
-
+        result = yt_sync.process_video(
+            url, model_size, out_dir=OUTPUT_DIR,
+            on_progress=lambda msg: set_state(stage="working", message=msg)
+        )
+        sync_data = result["sync_data"]
         set_state(
             stage="done", message="完成！", done=True,
             result={
-                "title": safe_title,
-                "audio_file": audio_path.name,
-                "json_file": json_path.name,
+                "title": result["title"],
+                "audio_file": result["audio_path"].name,
+                "json_file": result["json_path"].name,
                 "sentences": len(sync_data["sentences"]),
-                "duration": duration,
+                "duration": sync_data["duration"],
+                "used_captions": result["used_captions"],
             }
         )
     except Exception as e:

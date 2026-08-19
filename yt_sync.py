@@ -2,11 +2,14 @@
 One-command pipeline: YouTube URL -> downloaded audio + word-level synced
 transcript JSON, ready to open in player.html.
 
-The transcript text always comes straight from Whisper's own word-level
-output (no separate ground-truth text source, unlike audio_transcript_sync's
-PDF-alignment pipeline) -- for arbitrary YouTube videos there's no reliable
-ground truth to align against, so Whisper's words are both the displayed
-text and the timing.
+Timing accuracy: if the video has manually-uploaded (human, not
+auto-generated) English captions, those are used as ground-truth text and
+aligned onto Whisper's word timing via audio_transcript_sync/align.py's
+diff+interpolation logic -- the same technique that makes the Power
+English course's sync JSON much more accurate than raw Whisper output.
+Videos without manual captions fall back to using Whisper's own
+transcription directly (text and timing both straight from Whisper, no
+correction pass available).
 
 Usage: python yt_sync.py <youtube_url> [model_size]
 """
@@ -19,6 +22,9 @@ import urllib.request
 from pathlib import Path
 
 from faster_whisper import WhisperModel
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "audio_transcript_sync"))
+import align  # noqa: E402  (reused for its diff+interpolation alignment logic)
 
 OUTPUT_DIR = Path(__file__).parent / "output"
 COOKIES_PATH = Path(__file__).parent / "cookies.txt"
@@ -104,23 +110,66 @@ def download_audio(url, out_dir):
     return audio_path, safe_title
 
 
-def transcribe(audio_path, model_size="small"):
-    print(f"Loading Whisper model '{model_size}'...")
-    t0 = time.time()
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
-    print(f"Model loaded in {time.time() - t0:.1f}s")
+VTT_TIMESTAMP_RE = re.compile(r"-->")
+VTT_CUE_NUMBER_RE = re.compile(r"^\d+$")
+VTT_TAG_RE = re.compile(r"<[^>]+>")
 
-    print(f"Transcribing {audio_path.name} ...")
-    t0 = time.time()
-    segments, info = model.transcribe(str(audio_path), word_timestamps=True, language="en")
 
-    words = []
-    for seg in segments:
-        for w in seg.words:
-            words.append({"start": round(w.start, 3), "end": round(w.end, 3), "word": w.word})
+def parse_vtt_to_text(vtt_path):
+    """Extracts just the spoken cue text from a WebVTT file, in order,
+    stripping timestamps/cue-numbers/inline markup and collapsing
+    immediately-repeated lines (some caption tracks repeat a line across
+    adjacent cues for rolling-caption display)."""
+    with open(vtt_path, "r", encoding="utf-8") as f:
+        raw = f.read()
 
-    print(f"Transcribed in {time.time() - t0:.1f}s, {len(words)} words, duration {info.duration:.1f}s")
-    return words, info.duration
+    texts = []
+    for line in raw.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line == "WEBVTT" or line.startswith("Kind:") or line.startswith("Language:"):
+            continue
+        if VTT_TIMESTAMP_RE.search(line):
+            continue
+        if VTT_CUE_NUMBER_RE.match(line):
+            continue
+        line = VTT_TAG_RE.sub("", line).strip()
+        if line:
+            texts.append(line)
+
+    deduped = []
+    for t in texts:
+        if not deduped or deduped[-1] != t:
+            deduped.append(t)
+    return " ".join(deduped)
+
+
+def fetch_manual_subtitles_text(url, tmp_dir):
+    """Downloads YouTube's manually-uploaded (human, not auto-generated)
+    English subtitles if available, returns the caption text or None if
+    this video doesn't have any. Deliberately does NOT fall back to
+    auto-generated captions -- those are themselves ASR output, no more
+    trustworthy as ground truth than Whisper's own transcription."""
+    out_tmpl = str(tmp_dir / "_captions_tmp")
+    try:
+        run_yt_dlp([
+            "--write-subs", "--skip-download", "--sub-langs", "en",
+            "--sub-format", "vtt",
+            "-o", out_tmpl,
+            url
+        ])
+    except RuntimeError:
+        return None
+
+    vtt_path = tmp_dir / "_captions_tmp.en.vtt"
+    if not vtt_path.exists():
+        return None
+    try:
+        text = parse_vtt_to_text(vtt_path)
+        return text if text.strip() else None
+    finally:
+        vtt_path.unlink(missing_ok=True)
 
 
 def group_into_sentences(words):
@@ -140,6 +189,8 @@ def group_into_sentences(words):
 
 
 def build_sync_json(words, duration):
+    """Whisper-only path: text and timing both come straight from Whisper,
+    no ground truth to correct against."""
     groups = group_into_sentences(words)
     sentences = []
     for group in groups:
@@ -159,6 +210,90 @@ def build_sync_json(words, duration):
     return {"duration": duration, "sentences": sentences}
 
 
+def build_sync_json_from_captions(caption_text, whisper_words, duration):
+    """Caption-corrected path: reuses align.py's exact diff+interpolation
+    logic (the same one that makes Power English's sync JSON accurate) --
+    caption text is the ground truth, Whisper's words only supply timing."""
+    paragraphs = [p.strip() for p in caption_text.split("\n\n") if p.strip()] or [caption_text.strip()]
+    sentences_text = []
+    for para in paragraphs:
+        sentences_text.extend(align.split_sentences(para))
+
+    gt_words = []
+    for s_idx, sentence in enumerate(sentences_text):
+        for tok in sentence.split():
+            gt_words.append({"text": tok, "sentence_idx": s_idx})
+
+    anchors = align.align(gt_words, whisper_words)
+    sentences = align.build_sentences(gt_words, sentences_text, anchors)
+    return {"duration": duration, "sentences": sentences}
+
+
+def transcribe(audio_path, model_size="small"):
+    print(f"Loading Whisper model '{model_size}'...")
+    t0 = time.time()
+    model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    print(f"Model loaded in {time.time() - t0:.1f}s")
+
+    print(f"Transcribing {audio_path.name} ...")
+    t0 = time.time()
+    segments, info = model.transcribe(str(audio_path), word_timestamps=True, language="en")
+
+    words = []
+    for seg in segments:
+        for w in seg.words:
+            words.append({"start": round(w.start, 3), "end": round(w.end, 3), "word": w.word})
+
+    print(f"Transcribed in {time.time() - t0:.1f}s, {len(words)} words, duration {info.duration:.1f}s")
+    return words, info.duration
+
+
+def process_video(url, model_size="small", out_dir=None, on_progress=None):
+    """Full pipeline shared by the CLI (main()) and server.py's background
+    job: download audio, transcribe, use manual captions for timing
+    correction when available, write the sync JSON. on_progress(msg) is
+    called at each stage for callers that want to surface live status."""
+    out_dir = out_dir or OUTPUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def progress(msg):
+        print(msg)
+        if on_progress:
+            on_progress(msg)
+
+    progress("正在下載音檔...")
+    audio_path, safe_title = download_audio(url, out_dir)
+
+    progress(f"正在載入 Whisper 模型（{model_size}），第一次會比較久...")
+    words, duration = transcribe(audio_path, model_size)
+
+    progress("正在檢查有沒有官方字幕可以校正時間軸...")
+    caption_text = None
+    try:
+        caption_text = fetch_manual_subtitles_text(url, out_dir)
+    except Exception as e:
+        print(f"Could not fetch captions ({e}), falling back to Whisper-only text.")
+
+    if caption_text:
+        progress("找到官方字幕，用它校正 Whisper 的時間，準確度會比純 Whisper 高。")
+        sync_data = build_sync_json_from_captions(caption_text, words, duration)
+    else:
+        progress("這支影片沒有官方字幕，直接用 Whisper 自己聽出來的文字跟時間。")
+        sync_data = build_sync_json(words, duration)
+
+    json_path = out_dir / f"{safe_title}.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(sync_data, f, ensure_ascii=False, indent=2)
+
+    return {
+        "title": safe_title,
+        "audio_path": audio_path,
+        "json_path": json_path,
+        "sync_data": sync_data,
+        "used_captions": caption_text is not None,
+    }
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python yt_sync.py <youtube_url> [model_size]")
@@ -167,21 +302,15 @@ def main():
     url = sys.argv[1]
     model_size = sys.argv[2] if len(sys.argv) > 2 else "small"
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    audio_path, safe_title = download_audio(url, OUTPUT_DIR)
-
-    words, duration = transcribe(audio_path, model_size)
-    sync_data = build_sync_json(words, duration)
-
-    json_path = OUTPUT_DIR / f"{safe_title}.json"
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(sync_data, f, ensure_ascii=False, indent=2)
+    result = process_video(url, model_size)
+    sync_data = result["sync_data"]
 
     print()
     print("Done!")
-    print(f"Audio: {audio_path}")
-    print(f"Sync JSON: {json_path}")
+    print(f"Audio: {result['audio_path']}")
+    print(f"Sync JSON: {result['json_path']}")
     print(f"Sentences: {len(sync_data['sentences'])}")
+    print(f"Timing source: {'official captions (aligned)' if result['used_captions'] else 'Whisper only'}")
     print()
     print("Open player.html and pick these two files to play.")
 

@@ -136,6 +136,7 @@
         音檔：<code>${r.audio_file}</code><br>
         逐字稿：<code>${r.json_file}</code><br>
         長度：${formatDuration(r.duration)}，共 ${r.sentences} 句<br>
+        時間軸來源：${r.used_captions ? '官方字幕校正過（較準）' : '純 Whisper（這支影片沒有官方字幕）'}<br>
         <audio controls src="/output/${encodeURIComponent(r.audio_file)}"></audio>
         <div class="hint">存在 <code>output/</code> 資料夾裡了。開 player.html，選這兩個檔案就能播放（會逐字高亮）。</div>
       `;
