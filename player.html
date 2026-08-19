@@ -646,6 +646,20 @@
     clearRepeatHighlight();
     repeatRange = null;
     updateRepeatStatus();
+    // Rapid repeated programmatic seeking (exactly what looping does, many
+    // times per minute for a short phrase) can, on some mobile browsers'
+    // compressed-audio decoders, leave the actual audible playback position
+    // subtly desynced from what audio.currentTime reports -- the highlight
+    // tracker trusts currentTime, so once the decoder itself has drifted,
+    // the highlight looks wrong even though the JS faithfully followed
+    // what the browser told it. Nudging the position away and back forces
+    // a real seek (not a same-value no-op) when repeat ends, which
+    // re-anchors the decoder -- a known mitigation for this class of bug.
+    if (!audio.paused) {
+      const t = audio.currentTime;
+      audio.currentTime = t > 0.05 ? t - 0.05 : t + 0.05;
+      audio.currentTime = t;
+    }
   }
 
   function clearRepeatHighlight(){
