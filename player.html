@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube 逐字稿同步播放器</title>
+<style>
+  :root{
+    --bg:#f5f3ef; --card:#ffffff; --text:#1f1b16; --muted:#7a7368;
+    --accent:#c1440e; --word-active:#ffe27a; --sentence-active:#fff6dc; --border:#e2ddd3;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#181512; --card:#242019; --text:#f2ede4; --muted:#a89e8f;
+      --accent:#e07b45; --word-active:#8a6d1f; --sentence-active:#332b18; --border:#3a342b;
+    }
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family:-apple-system,"Segoe UI",Helvetica,Arial,"PingFang TC","Microsoft JhengHei",sans-serif;
+    background:var(--bg); color:var(--text); min-height:100vh;
+  }
+  .wrap{max-width:720px; margin:0 auto; padding:20px 16px 100px;}
+  h1{font-size:1.25rem; margin:0 0 4px;}
+  .sub{color:var(--muted); font-size:0.85rem; margin-bottom:16px;}
+  .note{font-size:0.75rem; color:var(--muted); margin:-6px 0 16px; line-height:1.5;}
+  .pickers{display:flex; flex-wrap:wrap; gap:10px; margin-bottom:16px;}
+  input[type=file]{display:none;}
+  input[type=password]{
+    font-family:inherit; font-size:0.9rem; padding:10px 14px; border-radius:10px;
+    border:1px solid var(--border); background:var(--card); color:var(--text); flex:1; min-width:180px;
+  }
+  button, label.filebtn{
+    font-family:inherit; font-size:0.9rem; padding:10px 14px; border-radius:10px;
+    border:1px solid var(--border); background:var(--card); color:var(--text); cursor:pointer;
+    display:inline-block;
+  }
+  button:hover, label.filebtn:hover{border-color:var(--accent);}
+  .status{font-size:0.8rem; color:var(--muted); margin-bottom:16px;}
+  .transcript{background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px; line-height:2; font-size:1.05rem;}
+  .sentence{padding:4px 6px; border-radius:8px; margin:2px 0;}
+  .sentence.active{background:var(--sentence-active);}
+  .word{cursor:pointer; padding:1px 2px; border-radius:4px;}
+  .word:hover{text-decoration:underline;}
+  .word.active{background:var(--word-active); font-weight:700;}
+  .word.in-repeat{box-shadow: inset 0 -3px 0 var(--accent);}
+  .sentence-repeat-btn, .sentence-translate-btn{
+    cursor:pointer; opacity:.55; font-size:0.85em; user-select:none;
+    display:inline-block; padding:8px 10px; margin:0 6px 0 0; border-radius:8px; border:1px solid transparent;
+  }
+  .sentence-repeat-btn{ margin-right:10px; }
+  .sentence-repeat-btn:hover, .sentence-repeat-btn:active,
+  .sentence-translate-btn:hover, .sentence-translate-btn:active{
+    opacity:1; background:var(--sentence-active); border-color:var(--border);
+  }
+  .translation-line{font-size:0.88em; color:var(--muted); margin:2px 0 8px 0; line-height:1.5;}
+  .translation-line.hidden{display:none;}
+  .repeat-status{
+    background:var(--accent); color:#fff; border-radius:10px; padding:8px 12px; margin-bottom:12px;
+    font-size:0.85rem; display:flex; align-items:center; justify-content:space-between; gap:10px;
+  }
+  .repeat-status.hidden{display:none;}
+  .repeat-status button{
+    background:rgba(255,255,255,.2); color:#fff; border:1px solid rgba(255,255,255,.5);
+    border-radius:8px; padding:4px 10px; font-size:0.78rem; cursor:pointer; flex:0 0 auto;
+  }
+  .empty{color:var(--muted); text-align:center; padding:40px 20px;}
+  .player-bar{
+    position:fixed; left:0; right:0; bottom:0; background:var(--card); border-top:1px solid var(--border);
+    padding:10px 16px; display:flex; align-items:center; gap:10px;
+  }
+  .player-bar button{flex:0 0 auto;}
+  .player-bar input[type=range]{flex:1;}
+  .time{font-size:0.78rem; color:var(--muted); min-width:80px; text-align:center;}
+  #speedSelect{
+    flex:0 0 auto; font-family:inherit; font-size:0.85rem; padding:8px 6px; border-radius:8px;
+    border:1px solid var(--border); background:var(--card); color:var(--text);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎧 YouTube 逐字稿同步播放器</h1>
+  <div class="sub">先用 yt_sync.py 把 YouTube 影片轉成音檔＋同步逐字稿，再到這裡選那兩個檔案播放。播放時目前唸到的字會變色、自動捲到那句。</div>
+  <div class="note">音檔跟同步逐字稿都只在你自己的裝置上選取播放，不會上傳到任何地方。</div>
+
+  <div class="pickers">
+    <label class="filebtn" for="audioInput">選擇音檔 (mp3)</label>
+    <input type="file" id="audioInput" accept="audio/*">
+    <label class="filebtn" for="syncInput">選擇同步逐字稿 (json)</label>
+    <input type="file" id="syncInput" accept=".json,application/json">
+  </div>
+  <div class="pickers">
+    <input type="password" id="apiKeyInput" placeholder="Anthropic API Key (sk-ant-...)">
+    <button id="btnSaveKey">儲存 Key</button>
+  </div>
+  <div class="note">用來點句子顯示中文翻譯。Key 只存在這台裝置的瀏覽器裡，不會上傳到任何地方。</div>
+  <div class="status" id="status"></div>
+
+  <div class="repeat-status hidden" id="repeatStatus"></div>
+  <div class="transcript" id="transcript"><div class="empty">請先選擇音檔和同步逐字稿</div></div>
+</div>
+
+<audio id="audio"></audio>
+<div class="player-bar">
+  <button id="btnPlayPause">▶️</button>
+  <input type="range" id="seekBar" min="0" max="0" step="0.01" value="0">
+  <select id="speedSelect">
+    <option value="0.7">0.7x</option>
+    <option value="1" selected>1x</option>
+    <option value="1.25">1.25x</option>
+    <option value="1.5">1.5x</option>
+  </select>
+  <span class="time" id="timeLabel">0:00 / 0:00</span>
+</div>
+
+<script>
+  const audioInput = document.getElementById('audioInput');
+  const syncInput = document.getElementById('syncInput');
+  const statusEl = document.getElementById('status');
+  const repeatStatusEl = document.getElementById('repeatStatus');
+  const transcriptEl = document.getElementById('transcript');
+  const audio = document.getElementById('audio');
+  const btnPlayPause = document.getElementById('btnPlayPause');
+  const seekBar = document.getElementById('seekBar');
+  const timeLabel = document.getElementById('timeLabel');
+  const speedSelect = document.getElementById('speedSelect');
+  speedSelect.addEventListener('change', () => {
+    audio.playbackRate = Number(speedSelect.value);
+  });
+
+  let audioReady = false;
+  let syncReady = false;
+
+  let flatWords = []; // { el, start, end }
+  let sentenceEls = []; // { el, start, end }
+  let currentWordIdx = -1;
+  let currentSentenceIdx = -1;
+  let repeatRange = null; // { startIdx, endIdx, playStart, playEnd } - the word/phrase/sentence being looped
+
+  // Same localStorage key as the indonesian-flashcard site / mp3_looper's
+  // sync.html (same origin conventions) - a key saved on any of them works
+  // on the others too if served from the same host, otherwise just re-save.
+  const API_KEY_LS = "anthropic_api_key";
+  function getApiKey(){ return localStorage.getItem(API_KEY_LS) || ""; }
+  function setApiKey(k){ localStorage.setItem(API_KEY_LS, k); }
+
+  const apiKeyInput = document.getElementById('apiKeyInput');
+  const btnSaveKey = document.getElementById('btnSaveKey');
+  apiKeyInput.value = getApiKey();
+  btnSaveKey.addEventListener('click', () => {
+    setApiKey(apiKeyInput.value.trim());
+    btnSaveKey.textContent = '已儲存 ✓';
+    setTimeout(() => { btnSaveKey.textContent = '儲存 Key'; }, 1500);
+  });
+
+  const TRANSLATION_CACHE_LS = "yt_sync_translation_cache";
+  let translationCache = {};
+  try { translationCache = JSON.parse(localStorage.getItem(TRANSLATION_CACHE_LS)) || {}; } catch(e) { translationCache = {}; }
+  function saveTranslationCache(){ localStorage.setItem(TRANSLATION_CACHE_LS, JSON.stringify(translationCache)); }
+
+  async function translateSentence(text){
+    if (translationCache[text]) return translationCache[text];
+    const key = getApiKey();
+    if (!key) throw new Error("請先在上面輸入並儲存 Anthropic API Key");
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({
+        model: "claude-opus-4-8",
+        max_tokens: 300,
+        messages: [{
+          role: "user",
+          content: `請把這句英文翻譯成自然、口語的繁體中文，只回傳翻譯本身，不要加任何說明或引號：\n\n${text}`
+        }]
+      })
+    });
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`HTTP ${res.status}: ${errBody.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    const block = (data.content || []).find((b) => b.type === "text");
+    if (!block) throw new Error("沒有收到翻譯內容");
+    const zh = block.text.trim();
+    translationCache[text] = zh;
+    saveTranslationCache();
+    return zh;
+  }
+
+  function formatTime(s){
+    if (!isFinite(s)) return '0:00';
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, '0')}`;
+  }
+
+  function updateStatus(){
+    if (audioReady && syncReady) {
+      statusEl.textContent = '就緒，可以播放了';
+    } else {
+      statusEl.textContent = `已選：${audioReady ? '音檔 ✓' : '音檔 ✗'}　${syncReady ? '同步稿 ✓' : '同步稿 ✗'}`;
+    }
+  }
+
+  audioInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    audio.src = URL.createObjectURL(file);
+    audioReady = true;
+    updateStatus();
+  });
+
+  syncInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        renderTranscript(data);
+        syncReady = true;
+        updateStatus();
+      } catch (err) {
+        alert('同步逐字稿讀取失敗：' + err.message);
+      }
+    };
+    reader.readAsText(file, 'UTF-8');
+  });
+
+  function renderTranscript(data){
+    transcriptEl.innerHTML = '';
+    flatWords = [];
+    sentenceEls = [];
+    currentWordIdx = -1;
+    currentSentenceIdx = -1;
+    repeatRange = null;
+    updateRepeatStatus();
+    data.sentences.forEach((sentence) => {
+      const sEl = document.createElement('p');
+      sEl.className = 'sentence';
+
+      const repeatBtn = document.createElement('span');
+      repeatBtn.className = 'sentence-repeat-btn';
+      repeatBtn.textContent = '🔁';
+      repeatBtn.title = '重複整句';
+      sEl.appendChild(repeatBtn);
+
+      const translateBtn = document.createElement('span');
+      translateBtn.className = 'sentence-translate-btn';
+      translateBtn.textContent = '中';
+      translateBtn.title = '顯示/隱藏中文翻譯';
+      sEl.appendChild(translateBtn);
+
+      const sentStartIdx = flatWords.length;
+      sentence.words.forEach((w, i) => {
+        const wordIdx = flatWords.length;
+        const wEl = document.createElement('span');
+        wEl.className = 'word';
+        wEl.textContent = w.text + (i < sentence.words.length - 1 ? ' ' : '');
+        wEl.addEventListener('click', () => handleWordTap(wordIdx));
+        sEl.appendChild(wEl);
+        flatWords.push({ el: wEl, start: w.start, end: w.end });
+      });
+      const sentEndIdx = flatWords.length - 1;
+      repeatBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setRepeatRange(sentStartIdx, sentEndIdx);
+      });
+
+      transcriptEl.appendChild(sEl);
+
+      const translationLine = document.createElement('div');
+      translationLine.className = 'translation-line hidden';
+      transcriptEl.appendChild(translationLine);
+
+      translateBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!translationLine.classList.contains('hidden')) {
+          translationLine.classList.add('hidden');
+          return;
+        }
+        translationLine.classList.remove('hidden');
+        if (translationLine.dataset.loaded === '1') return;
+        translationLine.textContent = '翻譯中...';
+        try {
+          const zh = await translateSentence(sentence.text);
+          translationLine.textContent = zh;
+          translationLine.dataset.loaded = '1';
+        } catch (err) {
+          translationLine.textContent = '翻譯失敗：' + err.message;
+        }
+      });
+
+      sentenceEls.push({ el: sEl, start: sentence.start, end: sentence.end });
+    });
+  }
+
+  // Tapping a word: no active repeat -> repeat just this word.
+  // Tap a word outside the current repeat range -> extend range to cover it (phrase/sentence repeat).
+  // Tap a word strictly inside a multi-word range -> collapse back to just that word.
+  // Tap the sole active word again -> cancel repeat.
+  function handleWordTap(idx){
+    if (!repeatRange) {
+      setRepeatRange(idx, idx);
+    } else if (repeatRange.startIdx === idx && repeatRange.endIdx === idx) {
+      clearRepeatRange();
+    } else if (idx < repeatRange.startIdx || idx > repeatRange.endIdx) {
+      setRepeatRange(Math.min(repeatRange.startIdx, idx), Math.max(repeatRange.endIdx, idx));
+    } else {
+      setRepeatRange(idx, idx);
+    }
+  }
+
+  // Whisper's word timestamps are sometimes cut a little too tight, clipping
+  // the onset consonant or trailing sound (e.g. "strong" -> "trong"). Pad the
+  // loop boundaries a bit, but never past the neighboring word's own audio.
+  const REPEAT_PAD_START = 0.12;
+  const REPEAT_PAD_END = 0.2;
+
+  function computeRepeatBounds(startIdx, endIdx){
+    const prevEnd = startIdx > 0 ? flatWords[startIdx - 1].end : 0;
+    const nextStart = endIdx < flatWords.length - 1 ? flatWords[endIdx + 1].start : Infinity;
+    const audioEnd = isFinite(audio.duration) ? audio.duration : Infinity;
+    const playStart = Math.max(prevEnd, flatWords[startIdx].start - REPEAT_PAD_START);
+    const playEnd = Math.min(nextStart, audioEnd, flatWords[endIdx].end + REPEAT_PAD_END);
+    return { playStart, playEnd };
+  }
+
+  function setRepeatRange(startIdx, endIdx){
+    clearRepeatHighlight();
+    const { playStart, playEnd } = computeRepeatBounds(startIdx, endIdx);
+    repeatRange = { startIdx, endIdx, playStart, playEnd };
+    for (let i = startIdx; i <= endIdx; i++) flatWords[i].el.classList.add('in-repeat');
+    updateRepeatStatus();
+    audio.currentTime = playStart;
+    audio.play();
+  }
+
+  function clearRepeatRange(){
+    clearRepeatHighlight();
+    repeatRange = null;
+    updateRepeatStatus();
+  }
+
+  function clearRepeatHighlight(){
+    if (repeatRange) {
+      for (let i = repeatRange.startIdx; i <= repeatRange.endIdx; i++) {
+        if (flatWords[i]) flatWords[i].el.classList.remove('in-repeat');
+      }
+    }
+  }
+
+  function updateRepeatStatus(){
+    if (!repeatRange) {
+      repeatStatusEl.classList.add('hidden');
+      repeatStatusEl.innerHTML = '';
+      return;
+    }
+    const text = flatWords.slice(repeatRange.startIdx, repeatRange.endIdx + 1)
+      .map((fw) => fw.el.textContent).join('').trim();
+    repeatStatusEl.classList.remove('hidden');
+    const label = document.createElement('span');
+    label.textContent = `🔁 重複播放中：「${text}」`;
+    const btn = document.createElement('button');
+    btn.textContent = '停止重複';
+    btn.addEventListener('click', clearRepeatRange);
+    repeatStatusEl.innerHTML = '';
+    repeatStatusEl.appendChild(label);
+    repeatStatusEl.appendChild(btn);
+  }
+
+  // Binary search for the last word whose start <= t
+  function findWordIndex(t){
+    let lo = 0, hi = flatWords.length - 1, ans = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (flatWords[mid].start <= t) { ans = mid; lo = mid + 1; }
+      else hi = mid - 1;
+    }
+    return ans;
+  }
+
+  function updateHighlight(t){
+    if (flatWords.length === 0) return;
+    const idx = findWordIndex(t);
+    if (idx === currentWordIdx) return;
+
+    if (currentWordIdx >= 0) flatWords[currentWordIdx].el.classList.remove('active');
+    currentWordIdx = idx;
+    if (idx >= 0) flatWords[idx].el.classList.add('active');
+
+    let sIdx = -1;
+    for (let i = 0; i < sentenceEls.length; i++) {
+      if (t >= sentenceEls[i].start && t <= sentenceEls[i].end) { sIdx = i; break; }
+    }
+    if (sIdx !== currentSentenceIdx) {
+      if (currentSentenceIdx >= 0) sentenceEls[currentSentenceIdx].el.classList.remove('active');
+      currentSentenceIdx = sIdx;
+      if (sIdx >= 0) {
+        sentenceEls[sIdx].el.classList.add('active');
+        sentenceEls[sIdx].el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
+    }
+  }
+
+  function tick(){
+    if (!audio.paused) {
+      if (repeatRange && audio.currentTime >= repeatRange.playEnd) {
+        audio.currentTime = repeatRange.playStart;
+      }
+      updateHighlight(audio.currentTime);
+      requestAnimationFrame(tick);
+    }
+  }
+  audio.addEventListener('play', () => { btnPlayPause.textContent = '⏸️'; requestAnimationFrame(tick); });
+  audio.addEventListener('pause', () => { btnPlayPause.textContent = '▶️'; });
+  audio.addEventListener('seeked', () => updateHighlight(audio.currentTime));
+  audio.addEventListener('loadedmetadata', () => {
+    seekBar.max = audio.duration;
+    audio.playbackRate = Number(speedSelect.value);
+  });
+  audio.addEventListener('timeupdate', () => {
+    seekBar.value = audio.currentTime;
+    timeLabel.textContent = `${formatTime(audio.currentTime)} / ${formatTime(audio.duration)}`;
+  });
+
+  btnPlayPause.addEventListener('click', () => {
+    if (!audioReady) return;
+    if (audio.paused) audio.play(); else audio.pause();
+  });
+  seekBar.addEventListener('input', () => {
+    audio.currentTime = Number(seekBar.value);
+    updateHighlight(audio.currentTime);
+  });
+
+  updateStatus();
+</script>
+</body>
+</html>

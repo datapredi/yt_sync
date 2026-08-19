@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube 逐字稿產生器</title>
+<style>
+  :root{
+    --bg:#f5f3ef; --card:#ffffff; --text:#1f1b16; --muted:#7a7368;
+    --accent:#c1440e; --border:#e2ddd3; --ok:#3a7d44; --err:#b3261e;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#181512; --card:#242019; --text:#f2ede4; --muted:#a89e8f;
+      --accent:#e07b45; --border:#3a342b; --ok:#7bc47f; --err:#e57373;
+    }
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family:-apple-system,"Segoe UI",Helvetica,Arial,"PingFang TC","Microsoft JhengHei",sans-serif;
+    background:var(--bg); color:var(--text); min-height:100vh;
+  }
+  .wrap{max-width:560px; margin:0 auto; padding:24px 16px 60px;}
+  h1{font-size:1.25rem; margin:0 0 4px;}
+  .sub{color:var(--muted); font-size:0.85rem; margin-bottom:20px; line-height:1.5;}
+  .card{background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px; margin-bottom:16px;}
+  label{display:block; font-size:0.85rem; color:var(--muted); margin-bottom:6px;}
+  input[type=text]{
+    width:100%; font-family:inherit; font-size:0.95rem; padding:12px 14px; border-radius:10px;
+    border:1px solid var(--border); background:var(--bg); color:var(--text); margin-bottom:14px;
+  }
+  select{
+    font-family:inherit; font-size:0.9rem; padding:10px 12px; border-radius:10px;
+    border:1px solid var(--border); background:var(--bg); color:var(--text); margin-bottom:14px;
+  }
+  button{
+    font-family:inherit; font-size:0.95rem; padding:12px 20px; border-radius:10px;
+    border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; font-weight:600;
+  }
+  button:disabled{opacity:0.5; cursor:default;}
+  .status{margin-top:16px; font-size:0.9rem; display:flex; align-items:center; gap:8px;}
+  .spinner{
+    width:16px; height:16px; border-radius:50%; border:2px solid var(--border); border-top-color:var(--accent);
+    animation:spin 0.8s linear infinite; flex:0 0 auto;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .status.ok{color:var(--ok);}
+  .status.err{color:var(--err); white-space:pre-wrap; word-break:break-word;}
+  .result{margin-top:14px; font-size:0.85rem; line-height:1.8;}
+  .result code{background:var(--bg); padding:2px 6px; border-radius:6px; font-size:0.85em;}
+  .hint{font-size:0.8rem; color:var(--muted); margin-top:10px; line-height:1.6;}
+  audio{width:100%; margin-top:10px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎬 YouTube 逐字稿產生器</h1>
+  <div class="sub">貼 YouTube 網址，自動下載音檔＋用 Whisper 轉出逐字稿，存到 <code>output/</code> 資料夾，之後可以在 <code>player.html</code> 挑這兩個檔案播放。</div>
+  <div class="sub">如果失敗訊息裡有 <code>HTTP Error 403</code>：YouTube 擋了沒有登入的下載請求。用瀏覽器分機（例如 Chrome 的「Get cookies.txt LOCALLY」）登入 YouTube 後匯出 cookies，存成 <code>cookies.txt</code> 放到 <code>yt_sync</code> 資料夾裡，就會自動套用，不用改任何設定。</div>
+
+  <div class="card">
+    <label for="urlInput">YouTube 網址</label>
+    <input type="text" id="urlInput" placeholder="https://www.youtube.com/watch?v=...">
+    <label for="modelSelect">Whisper 模型（越大越準，但越慢）</label>
+    <select id="modelSelect">
+      <option value="tiny">tiny（最快，準確度較低）</option>
+      <option value="small" selected>small（預設，速度/準確度平衡）</option>
+      <option value="medium">medium（較準，較慢）</option>
+    </select>
+    <div>
+      <button id="btnGenerate">開始產生</button>
+    </div>
+    <div class="status hidden" id="statusRow">
+      <div class="spinner" id="spinner"></div>
+      <span id="statusText"></span>
+    </div>
+    <div class="result hidden" id="resultBox"></div>
+  </div>
+</div>
+
+<script>
+  const urlInput = document.getElementById('urlInput');
+  const modelSelect = document.getElementById('modelSelect');
+  const btnGenerate = document.getElementById('btnGenerate');
+  const statusRow = document.getElementById('statusRow');
+  const spinner = document.getElementById('spinner');
+  const statusText = document.getElementById('statusText');
+  const resultBox = document.getElementById('resultBox');
+
+  let pollTimer = null;
+
+  function stopPolling(){
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  }
+
+  function setStatus(cls, text, showSpinner){
+    statusRow.classList.remove('hidden');
+    statusRow.className = 'status ' + cls;
+    spinner.style.display = showSpinner ? 'block' : 'none';
+    statusText.textContent = text;
+  }
+
+  function formatDuration(s){
+    const m = Math.floor(s / 60);
+    const sec = Math.round(s % 60);
+    return `${m}:${sec.toString().padStart(2, '0')}`;
+  }
+
+  async function pollStatus(jobId){
+    let res;
+    try {
+      res = await fetch(`/api/status?job_id=${jobId}`);
+    } catch (err) {
+      setStatus('err', '連不到本地伺服器，請確認 server.py 還在執行中：' + err.message, false);
+      btnGenerate.disabled = false;
+      return;
+    }
+    if (!res.ok) {
+      setStatus('err', '查詢進度失敗（HTTP ' + res.status + '）', false);
+      btnGenerate.disabled = false;
+      return;
+    }
+    const job = await res.json();
+    if (job.stage === 'error') {
+      setStatus('err', '失敗：' + job.message, false);
+      btnGenerate.disabled = false;
+      return;
+    }
+    if (job.done) {
+      setStatus('ok', '完成！', false);
+      btnGenerate.disabled = false;
+      const r = job.result;
+      resultBox.classList.remove('hidden');
+      resultBox.innerHTML = `
+        標題：${r.title}<br>
+        音檔：<code>${r.audio_file}</code><br>
+        逐字稿：<code>${r.json_file}</code><br>
+        長度：${formatDuration(r.duration)}，共 ${r.sentences} 句<br>
+        <audio controls src="/output/${encodeURIComponent(r.audio_file)}"></audio>
+        <div class="hint">存在 <code>output/</code> 資料夾裡了。開 player.html，選這兩個檔案就能播放（會逐字高亮）。</div>
+      `;
+      return;
+    }
+    setStatus('', job.message || '處理中...', true);
+    pollTimer = setTimeout(() => pollStatus(jobId), 1500);
+  }
+
+  btnGenerate.addEventListener('click', async () => {
+    const url = urlInput.value.trim();
+    if (!url) { alert('請先貼 YouTube 網址'); return; }
+    stopPolling();
+    resultBox.classList.add('hidden');
+    btnGenerate.disabled = true;
+    setStatus('', '送出中...', true);
+
+    let res;
+    try {
+      res = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, model: modelSelect.value })
+      });
+    } catch (err) {
+      setStatus('err', '連不到本地伺服器，請先執行 python server.py：' + err.message, false);
+      btnGenerate.disabled = false;
+      return;
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setStatus('err', '啟動失敗：' + (body.error || res.status), false);
+      btnGenerate.disabled = false;
+      return;
+    }
+    const data = await res.json();
+    pollStatus(data.job_id);
+  });
+</script>
+</body>
+</html>
