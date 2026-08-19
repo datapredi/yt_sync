@@ -434,7 +434,11 @@
       const sentEndIdx = flatWords.length - 1;
       repeatBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        setRepeatRange(sentStartIdx, sentEndIdx);
+        if (repeatRange && repeatRange.startIdx === sentStartIdx && repeatRange.endIdx === sentEndIdx) {
+          clearRepeatRange();
+        } else {
+          setRepeatRange(sentStartIdx, sentEndIdx);
+        }
       });
 
       transcriptEl.appendChild(sEl);
