@@ -224,21 +224,62 @@ def build_sync_json_from_captions(caption_text, whisper_words, duration):
     return {"duration": duration, "sentences": sentences}
 
 
-def transcribe(audio_path, model_size="small"):
+CHECKPOINT_INTERVAL_SECONDS = 30
+
+
+def checkpoint_path_for(audio_path):
+    return audio_path.with_name(audio_path.stem + ".transcribe_checkpoint.json")
+
+
+def transcribe(audio_path, model_size="small", on_progress=None):
+    """Transcribes with periodic checkpointing: for long videos (whisper is
+    the slow, CPU-only step -- easily 30-90+ min for a 2hr video), losing
+    all progress to a crash/interruption partway through would be a real
+    cost, not just an inconvenience. Every ~30s of transcription work is
+    saved to a checkpoint file next to the audio; if interrupted, the next
+    run picks up from the last checkpoint (via faster-whisper's
+    clip_timestamps, which re-transcribes only the remaining portion)
+    instead of starting over from 0:00."""
     print(f"Loading Whisper model '{model_size}'...")
     t0 = time.time()
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
     print(f"Model loaded in {time.time() - t0:.1f}s")
 
+    checkpoint_path = checkpoint_path_for(audio_path)
+    words = []
+    resume_from = 0.0
+    if checkpoint_path.exists():
+        try:
+            with open(checkpoint_path, "r", encoding="utf-8") as f:
+                words = json.load(f)
+            if words:
+                resume_from = words[-1]["end"]
+                msg = f"發現上次中斷的轉錄進度（到 {resume_from:.0f} 秒），接著轉，不用整段重來..."
+                print(msg)
+                if on_progress:
+                    on_progress(msg)
+        except Exception:
+            words = []
+            resume_from = 0.0
+
     print(f"Transcribing {audio_path.name} ...")
     t0 = time.time()
-    segments, info = model.transcribe(str(audio_path), word_timestamps=True, language="en")
+    clip_timestamps = str(round(resume_from, 3)) if resume_from > 0 else "0"
+    segments, info = model.transcribe(
+        str(audio_path), word_timestamps=True, language="en",
+        clip_timestamps=clip_timestamps,
+    )
 
-    words = []
+    last_checkpoint = time.time()
     for seg in segments:
         for w in seg.words:
             words.append({"start": round(w.start, 3), "end": round(w.end, 3), "word": w.word})
+        if time.time() - last_checkpoint > CHECKPOINT_INTERVAL_SECONDS:
+            with open(checkpoint_path, "w", encoding="utf-8") as f:
+                json.dump(words, f)
+            last_checkpoint = time.time()
 
+    checkpoint_path.unlink(missing_ok=True)
     print(f"Transcribed in {time.time() - t0:.1f}s, {len(words)} words, duration {info.duration:.1f}s")
     return words, info.duration
 
@@ -260,7 +301,7 @@ def process_video(url, model_size="small", out_dir=None, on_progress=None):
     audio_path, safe_title, vtt_path = download_audio(url, out_dir)
 
     progress(f"正在載入 Whisper 模型（{model_size}），第一次會比較久...")
-    words, duration = transcribe(audio_path, model_size)
+    words, duration = transcribe(audio_path, model_size, on_progress=on_progress)
 
     caption_text = None
     if vtt_path:
