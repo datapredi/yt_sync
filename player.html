@@ -64,6 +64,19 @@
     background:rgba(255,255,255,.2); color:#fff; border:1px solid rgba(255,255,255,.5);
     border-radius:8px; padding:4px 10px; font-size:0.78rem; cursor:pointer; flex:0 0 auto;
   }
+  .word.picked{background:var(--sentence-active); box-shadow: inset 0 0 0 2px var(--accent);}
+  #btnPickMode.on{background:var(--accent); color:#fff; border-color:var(--accent);}
+  .pick-status{
+    background:var(--card); border:1px solid var(--accent); border-radius:10px; padding:8px 12px; margin-bottom:12px;
+    font-size:0.85rem; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+  }
+  .pick-status.hidden{display:none;}
+  .pick-status .pick-words{flex:1 1 auto; min-width:0; word-break:break-word;}
+  .pick-status .pick-actions{display:flex; gap:8px; flex:0 0 auto;}
+  .pick-status button{
+    font-size:0.78rem; padding:4px 10px; border-radius:8px; border:1px solid var(--accent);
+    background:var(--card); color:var(--text); cursor:pointer;
+  }
   .empty{color:var(--muted); text-align:center; padding:40px 20px;}
   .player-bar{
     position:fixed; left:0; right:0; bottom:0; background:var(--card); border-top:1px solid var(--border);
@@ -97,10 +110,13 @@
   <div class="note">用來點句子顯示中文翻譯。Key 只存在這台裝置的瀏覽器裡，不會上傳到任何地方。</div>
   <div class="pickers">
     <button id="btnTranslateAll" disabled>🌐 全文翻譯</button>
+    <button id="btnPickMode" disabled>🔤 選字模式：關</button>
   </div>
+  <div class="note">選字模式開著的時候，點字是「選取這個字」不是重複播放；選好之後可以一次複製，貼去問 AI 或存進 Obsidian。</div>
   <div class="status" id="status"></div>
 
   <div class="repeat-status hidden" id="repeatStatus"></div>
+  <div class="pick-status hidden" id="pickStatus"></div>
   <div class="transcript" id="transcript"><div class="empty">請先選擇音檔和同步逐字稿</div></div>
 </div>
 
@@ -122,7 +138,9 @@
   const syncInput = document.getElementById('syncInput');
   const statusEl = document.getElementById('status');
   const repeatStatusEl = document.getElementById('repeatStatus');
+  const pickStatusEl = document.getElementById('pickStatus');
   const btnTranslateAll = document.getElementById('btnTranslateAll');
+  const btnPickMode = document.getElementById('btnPickMode');
   const transcriptEl = document.getElementById('transcript');
   const audio = document.getElementById('audio');
   const btnPlayPause = document.getElementById('btnPlayPause');
@@ -136,12 +154,14 @@
   let audioReady = false;
   let syncReady = false;
 
-  let flatWords = []; // { el, start, end }
+  let flatWords = []; // { el, text, start, end }
   let sentenceEls = []; // { el, start, end }
   let translationRefs = []; // { text, lineEl }
   let currentWordIdx = -1;
   let currentSentenceIdx = -1;
   let repeatRange = null; // { startIdx, endIdx, playStart, playEnd } - the word/phrase/sentence being looped
+  let pickMode = false;
+  let pickedIndices = new Set(); // indices into flatWords the user has tapped to pick out
 
   // Same localStorage key as the indonesian-flashcard site / mp3_looper's
   // sync.html (same origin conventions) - a key saved on any of them works
@@ -339,7 +359,10 @@
     currentSentenceIdx = -1;
     repeatRange = null;
     updateRepeatStatus();
+    pickedIndices = new Set();
+    updatePickStatus();
     btnTranslateAll.disabled = false;
+    btnPickMode.disabled = false;
     // Whisper's word timestamps aren't always strictly increasing (small
     // overlaps/backslides happen at segment boundaries). findWordIndex()
     // does a binary search assuming non-decreasing start times, and
@@ -372,12 +395,12 @@
         const wEl = document.createElement('span');
         wEl.className = 'word';
         wEl.textContent = w.text + (i < sentence.words.length - 1 ? ' ' : '');
-        wEl.addEventListener('click', () => handleWordTap(wordIdx));
+        wEl.addEventListener('click', () => onWordClick(wordIdx));
         sEl.appendChild(wEl);
         const start = Math.max(w.start, lastEnd);
         const end = Math.max(w.end, start);
         lastEnd = end;
-        flatWords.push({ el: wEl, start, end });
+        flatWords.push({ el: wEl, text: w.text, start, end });
       });
       const sentEndIdx = flatWords.length - 1;
       repeatBtn.addEventListener('click', (e) => {
@@ -415,6 +438,78 @@
       translationRefs.push({ text: sentence.text, lineEl: translationLine });
     });
   }
+
+  function onWordClick(idx){
+    if (pickMode) togglePick(idx);
+    else handleWordTap(idx);
+  }
+
+  function togglePick(idx){
+    if (pickedIndices.has(idx)) {
+      pickedIndices.delete(idx);
+      flatWords[idx].el.classList.remove('picked');
+    } else {
+      pickedIndices.add(idx);
+      flatWords[idx].el.classList.add('picked');
+    }
+    updatePickStatus();
+  }
+
+  function clearPicked(){
+    pickedIndices.forEach((idx) => flatWords[idx].el.classList.remove('picked'));
+    pickedIndices = new Set();
+    updatePickStatus();
+  }
+
+  function pickedText(){
+    // Always in transcript reading order, not tap order, so the copied text
+    // reads naturally regardless of which order the words were picked in.
+    return Array.from(pickedIndices).sort((a, b) => a - b).map((i) => flatWords[i].text).join(' ');
+  }
+
+  function updatePickStatus(){
+    if (pickedIndices.size === 0) {
+      pickStatusEl.classList.add('hidden');
+      pickStatusEl.innerHTML = '';
+      return;
+    }
+    pickStatusEl.classList.remove('hidden');
+    pickStatusEl.innerHTML = '';
+
+    const words = document.createElement('span');
+    words.className = 'pick-words';
+    words.textContent = `已選 ${pickedIndices.size} 個字：${pickedText()}`;
+    pickStatusEl.appendChild(words);
+
+    const actions = document.createElement('span');
+    actions.className = 'pick-actions';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = '📋 複製';
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(pickedText());
+        copyBtn.textContent = '已複製 ✓';
+        setTimeout(() => { copyBtn.textContent = '📋 複製'; }, 1500);
+      } catch (err) {
+        alert('複製失敗：' + err.message);
+      }
+    });
+    actions.appendChild(copyBtn);
+
+    const clearBtn = document.createElement('button');
+    clearBtn.textContent = '清除';
+    clearBtn.addEventListener('click', clearPicked);
+    actions.appendChild(clearBtn);
+
+    pickStatusEl.appendChild(actions);
+  }
+
+  btnPickMode.addEventListener('click', () => {
+    pickMode = !pickMode;
+    btnPickMode.textContent = pickMode ? '🔤 選字模式：開' : '🔤 選字模式：關';
+    btnPickMode.classList.toggle('on', pickMode);
+  });
 
   // Tapping a word: no active repeat -> repeat just this word.
   // Tap a word outside the current repeat range -> extend range to cover it (phrase/sentence repeat).
