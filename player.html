@@ -81,6 +81,11 @@
   @media (prefers-color-scheme: dark){ .word.search-hit{background:#7a4fd6; color:#f2ede4;} }
   .word.search-current{outline:2px solid #7a1fd6; outline-offset:1px; font-weight:700;}
   .search-bar{display:flex; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap;}
+  textarea#pasteTranslationInput{
+    width:100%; font-family:inherit; font-size:0.85rem; padding:10px 12px; border-radius:10px;
+    border:1px solid var(--border); background:var(--card); color:var(--text); resize:vertical;
+    min-height:4em; margin-top:8px;
+  }
   .search-bar input[type=text]{
     flex:1 1 160px; font-family:inherit; font-size:0.9rem; padding:10px 14px; border-radius:10px;
     border:1px solid var(--border); background:var(--card); color:var(--text);
@@ -123,6 +128,16 @@
     <button id="btnPickMode" disabled>🔤 選字模式：關</button>
   </div>
   <div class="note">選字模式開著的時候，點字是「選取這個字」不是重複播放；選好之後可以一次複製，貼去問 AI 或存進 Obsidian。</div>
+  <div class="pickers">
+    <button id="btnCopyForTranslate" disabled>📋 複製待翻譯文字</button>
+  </div>
+  <div class="note">不想輸入 API Key 的話，按這個把還沒翻譯的句子複製出來，貼去 ChatGPT 或 Claude 網頁版翻譯，把回覆的翻譯結果整段貼回下面，按套用就會顯示在對應的句子下面。</div>
+  <div class="pickers">
+    <textarea id="pasteTranslationInput" placeholder="把 AI 翻譯好的結果（保留原本 1. 2. 3. 編號）整段貼在這裡" rows="3" disabled></textarea>
+  </div>
+  <div class="pickers">
+    <button id="btnApplyPastedTranslation" disabled>✅ 套用貼上的翻譯</button>
+  </div>
   <div class="search-bar">
     <input type="text" id="searchInput" placeholder="搜尋逐字稿裡的字..." disabled>
     <button id="btnSearchPrev" disabled>◀</button>
@@ -156,6 +171,9 @@
   const repeatStatusEl = document.getElementById('repeatStatus');
   const pickStatusEl = document.getElementById('pickStatus');
   const btnTranslateAll = document.getElementById('btnTranslateAll');
+  const btnCopyForTranslate = document.getElementById('btnCopyForTranslate');
+  const pasteTranslationInput = document.getElementById('pasteTranslationInput');
+  const btnApplyPastedTranslation = document.getElementById('btnApplyPastedTranslation');
   const btnPickMode = document.getElementById('btnPickMode');
   const searchInput = document.getElementById('searchInput');
   const btnSearchPrev = document.getElementById('btnSearchPrev');
@@ -355,6 +373,71 @@
     }
   });
 
+  // No-API-key path: copy the not-yet-translated sentences as a numbered
+  // list (ready to paste straight into ChatGPT/Claude's web app), then let
+  // the user paste the reply back and match it up by number. The numbering
+  // is tied to pendingCopyForTranslateRefs (the exact list copied last),
+  // not to translationRefs' live indices, so it stays correct even if more
+  // sentences get translated by other means in between copy and paste.
+  let pendingCopyForTranslateRefs = [];
+
+  btnCopyForTranslate.addEventListener('click', async () => {
+    const missing = translationRefs.filter((r) => !translationCache[r.text]);
+    if (missing.length === 0) {
+      alert('全部句子都已經有翻譯了。');
+      return;
+    }
+    pendingCopyForTranslateRefs = missing;
+    const list = missing.map((r, i) => `${i + 1}. ${r.text}`).join('\n');
+    const text = `請把下面每一句英文翻譯成自然、口語的繁體中文，保留一樣的編號格式回覆，不要加其他說明文字：\n\n${list}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      const originalLabel = btnCopyForTranslate.textContent;
+      btnCopyForTranslate.textContent = '已複製 ✓';
+      setTimeout(() => { btnCopyForTranslate.textContent = originalLabel; }, 1500);
+    } catch (err) {
+      alert('複製失敗：' + err.message);
+    }
+  });
+
+  btnApplyPastedTranslation.addEventListener('click', () => {
+    if (pendingCopyForTranslateRefs.length === 0) {
+      alert('請先按「複製待翻譯文字」，翻譯好之後再貼回來套用。');
+      return;
+    }
+    const raw = pasteTranslationInput.value;
+    const lineRe = /^\s*(\d+)[.)、]\s*(.+)$/;
+    const map = {};
+    raw.split('\n').forEach((line) => {
+      const m = line.match(lineRe);
+      if (m) map[Number(m[1])] = m[2].trim();
+    });
+
+    let applied = 0;
+    const stillMissing = [];
+    pendingCopyForTranslateRefs.forEach((r, i) => {
+      const zh = map[i + 1];
+      if (zh) {
+        translationCache[r.text] = zh;
+        applied++;
+      } else {
+        stillMissing.push(r);
+      }
+    });
+    saveTranslationCache();
+
+    translationRefs.forEach((r) => {
+      if (!translationCache[r.text]) return;
+      r.lineEl.classList.remove('hidden');
+      r.lineEl.textContent = translationCache[r.text];
+      r.lineEl.dataset.loaded = '1';
+    });
+
+    pasteTranslationInput.value = '';
+    pendingCopyForTranslateRefs = stillMissing;
+    alert(`套用了 ${applied} 句翻譯。${stillMissing.length > 0 ? `有 ${stillMissing.length} 句對不到編號，可能是格式跑掉了，可以重新複製一次再貼。` : ''}`);
+  });
+
   function formatTime(s){
     if (!isFinite(s)) return '0:00';
     const m = Math.floor(s / 60);
@@ -400,6 +483,7 @@
     flatWords = [];
     sentenceEls = [];
     translationRefs = [];
+    pendingCopyForTranslateRefs = [];
     currentWordIdx = -1;
     currentSentenceIdx = -1;
     repeatRange = null;
@@ -411,6 +495,9 @@
     searchInput.value = '';
     searchCountEl.textContent = '';
     btnTranslateAll.disabled = false;
+    btnCopyForTranslate.disabled = false;
+    pasteTranslationInput.disabled = false;
+    btnApplyPastedTranslation.disabled = false;
     btnPickMode.disabled = false;
     searchInput.disabled = false;
     btnSearchPrev.disabled = true;
