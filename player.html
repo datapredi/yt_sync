@@ -400,25 +400,30 @@
     }
   });
 
+  // Best-effort strip of whatever numbering/bullet style the reply used
+  // ("1.", "1)", "**1.**", "1、", "- ", ...) -- purely cosmetic cleanup.
+  // Matching itself is positional (line N -> pending sentence N), not based
+  // on parsing the number back out, since AI replies don't reliably keep
+  // the exact "1." format asked for (markdown bold around the number,
+  // different punctuation, etc.) and a strict per-line regex silently
+  // dropped any line it didn't recognize instead of applying it.
+  function stripLeadingNumbering(line){
+    return line.replace(/^\**\s*\d+\s*[.)、:：-]?\s*\**\s*/, '').trim();
+  }
+
   btnApplyPastedTranslation.addEventListener('click', () => {
     if (pendingCopyForTranslateRefs.length === 0) {
       alert('請先按「複製待翻譯文字」，翻譯好之後再貼回來套用。');
       return;
     }
-    const raw = pasteTranslationInput.value;
-    const lineRe = /^\s*(\d+)[.)、]\s*(.+)$/;
-    const map = {};
-    raw.split('\n').forEach((line) => {
-      const m = line.match(lineRe);
-      if (m) map[Number(m[1])] = m[2].trim();
-    });
+    const lines = pasteTranslationInput.value.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
 
     let applied = 0;
     const stillMissing = [];
     pendingCopyForTranslateRefs.forEach((r, i) => {
-      const zh = map[i + 1];
-      if (zh) {
-        translationCache[r.text] = zh;
+      const line = lines[i];
+      if (line) {
+        translationCache[r.text] = stripLeadingNumbering(line);
         applied++;
       } else {
         stillMissing.push(r);
