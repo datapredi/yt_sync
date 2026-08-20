@@ -263,7 +263,7 @@
       },
       body: JSON.stringify({
         model: "claude-opus-4-8",
-        max_tokens: 4096,
+        max_tokens: 8192,
         output_config: {
           format: {
             type: "json_schema",
@@ -290,6 +290,9 @@
     const data = await res.json();
     const block = (data.content || []).find((b) => b.type === "text");
     if (!block) throw new Error("沒有收到翻譯內容");
+    if (data.stop_reason === "max_tokens") {
+      throw new Error("這批句子太長，翻譯結果被截斷了（超過單次可以處理的長度）");
+    }
     const parsed = JSON.parse(block.text);
     return parsed.translations;
   }
@@ -307,23 +310,43 @@
     btnTranslateAll.disabled = true;
     try {
       const missing = translationRefs.filter((r) => !translationCache[r.text]);
-      const batches = chunkArr(missing, 20);
+      // Smaller batches than before (10, not 20): a batch of 20 sentences
+      // could exceed the response token budget if several are long,
+      // truncating the JSON mid-string and failing to parse. Batch
+      // failures are now also isolated -- one bad batch no longer aborts
+      // translation of everything after it, just that batch's sentences.
+      const batches = chunkArr(missing, 10);
       let done = 0;
+      let failCount = 0;
       for (const batch of batches) {
         btnTranslateAll.textContent = `翻譯中... (${done}/${missing.length})`;
-        const translations = await translateSentencesBatch(batch.map((r) => r.text));
-        batch.forEach((r, i) => {
-          if (translations[i] === undefined) return;
-          translationCache[r.text] = translations[i];
-        });
-        saveTranslationCache();
+        try {
+          const translations = await translateSentencesBatch(batch.map((r) => r.text));
+          batch.forEach((r, i) => {
+            if (translations[i] === undefined) return;
+            translationCache[r.text] = translations[i];
+          });
+          saveTranslationCache();
+        } catch (err) {
+          failCount += batch.length;
+        }
         done += batch.length;
       }
       translationRefs.forEach((r) => {
         r.lineEl.classList.remove('hidden');
-        r.lineEl.textContent = translationCache[r.text] || '（翻譯失敗）';
-        r.lineEl.dataset.loaded = '1';
+        if (translationCache[r.text]) {
+          r.lineEl.textContent = translationCache[r.text];
+          r.lineEl.dataset.loaded = '1';
+        } else {
+          // Leave dataset.loaded unset so a retry (button click, or the
+          // per-sentence 中 toggle) re-attempts just this one instead of
+          // treating the failure message as a cached "translation".
+          r.lineEl.textContent = '（翻譯失敗，可以再按一次「全文翻譯」補齊）';
+        }
       });
+      if (failCount > 0) {
+        alert(`有 ${failCount} 句翻譯失敗（可能是這批句子太長），可以再按一次「全文翻譯」補齊，已經成功的不會重跑。`);
+      }
     } catch (err) {
       alert('全文翻譯失敗：' + err.message);
     } finally {
