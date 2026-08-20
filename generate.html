@@ -25,9 +25,10 @@
   .sub{color:var(--muted); font-size:0.85rem; margin-bottom:20px; line-height:1.5;}
   .card{background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px; margin-bottom:16px;}
   label{display:block; font-size:0.85rem; color:var(--muted); margin-bottom:6px;}
-  input[type=text]{
-    width:100%; font-family:inherit; font-size:0.95rem; padding:12px 14px; border-radius:10px;
+  textarea{
+    width:100%; font-family:inherit; font-size:0.9rem; padding:12px 14px; border-radius:10px;
     border:1px solid var(--border); background:var(--bg); color:var(--text); margin-bottom:14px;
+    resize:vertical; min-height:5.5em;
   }
   select{
     font-family:inherit; font-size:0.9rem; padding:10px 12px; border-radius:10px;
@@ -38,29 +39,41 @@
     border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; font-weight:600;
   }
   button:disabled{opacity:0.5; cursor:default;}
-  .status{margin-top:16px; font-size:0.9rem; display:flex; align-items:center; gap:8px;}
+  .hint{font-size:0.8rem; color:var(--muted); margin-top:10px; line-height:1.6;}
+  audio{width:100%; margin-top:10px;}
+
+  .queue-item{
+    background:var(--card); border:1px solid var(--border); border-radius:14px;
+    padding:16px 20px; margin-bottom:12px;
+  }
+  .queue-item .qurl{font-size:0.85rem; word-break:break-all; color:var(--muted); margin-bottom:8px;}
+  .queue-item .qstatusrow{display:flex; align-items:center; gap:8px; font-size:0.9rem;}
+  .queue-item .qbadge{
+    font-size:0.72rem; padding:2px 9px; border-radius:999px; flex:0 0 auto; font-weight:600;
+  }
+  .qbadge.waiting{background:var(--bg); color:var(--muted); border:1px solid var(--border);}
+  .qbadge.working{background:var(--accent); color:#fff;}
+  .qbadge.ok{background:var(--ok); color:#fff;}
+  .qbadge.err{background:var(--err); color:#fff;}
   .spinner{
-    width:16px; height:16px; border-radius:50%; border:2px solid var(--border); border-top-color:var(--accent);
+    width:14px; height:14px; border-radius:50%; border:2px solid var(--border); border-top-color:var(--accent);
     animation:spin 0.8s linear infinite; flex:0 0 auto;
   }
   @keyframes spin{ to{ transform:rotate(360deg); } }
-  .status.ok{color:var(--ok);}
-  .status.err{color:var(--err); white-space:pre-wrap; word-break:break-word;}
-  .result{margin-top:14px; font-size:0.85rem; line-height:1.8;}
-  .result code{background:var(--bg); padding:2px 6px; border-radius:6px; font-size:0.85em;}
-  .hint{font-size:0.8rem; color:var(--muted); margin-top:10px; line-height:1.6;}
-  audio{width:100%; margin-top:10px;}
+  .queue-item .qresult{margin-top:10px; font-size:0.85rem; line-height:1.8;}
+  .queue-item .qresult code{background:var(--bg); padding:2px 6px; border-radius:6px; font-size:0.85em;}
+  .queue-item .qerr{margin-top:8px; font-size:0.85rem; color:var(--err); white-space:pre-wrap; word-break:break-word;}
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>🎬 YouTube 逐字稿產生器</h1>
-  <div class="sub">貼 YouTube 網址，自動下載音檔＋用 Whisper 轉出逐字稿，存到 <code>output/</code> 資料夾，之後可以在 <code>player.html</code> 挑這兩個檔案播放。</div>
+  <div class="sub">貼 YouTube 網址（一行一個，可以貼很多個），自動下載音檔＋用 Whisper 轉出逐字稿，存到 <code>output/</code> 資料夾，之後可以在 <code>player.html</code> 挑這兩個檔案播放。多個網址會依序處理（不是同時），避免互搶 CPU 反而更慢。</div>
   <div class="sub">如果失敗訊息裡有 <code>HTTP Error 403</code>：YouTube 擋了沒有登入的下載請求。用瀏覽器分機（例如 Chrome 的「Get cookies.txt LOCALLY」）登入 YouTube 後匯出 cookies，存成 <code>cookies.txt</code> 放到 <code>yt_sync</code> 資料夾裡，就會自動套用，不用改任何設定。</div>
 
   <div class="card">
-    <label for="urlInput">YouTube 網址</label>
-    <input type="text" id="urlInput" placeholder="https://www.youtube.com/watch?v=...">
+    <label for="urlInput">YouTube 網址（一行一個）</label>
+    <textarea id="urlInput" rows="4" placeholder="https://www.youtube.com/watch?v=...&#10;https://www.youtube.com/watch?v=..."></textarea>
     <label for="modelSelect">Whisper 模型（越大越準，但越慢）</label>
     <select id="modelSelect">
       <option value="tiny">tiny（最快，準確度較低）</option>
@@ -70,35 +83,16 @@
     <div>
       <button id="btnGenerate">開始產生</button>
     </div>
-    <div class="status hidden" id="statusRow">
-      <div class="spinner" id="spinner"></div>
-      <span id="statusText"></span>
-    </div>
-    <div class="result hidden" id="resultBox"></div>
   </div>
+
+  <div id="queueList"></div>
 </div>
 
 <script>
   const urlInput = document.getElementById('urlInput');
   const modelSelect = document.getElementById('modelSelect');
   const btnGenerate = document.getElementById('btnGenerate');
-  const statusRow = document.getElementById('statusRow');
-  const spinner = document.getElementById('spinner');
-  const statusText = document.getElementById('statusText');
-  const resultBox = document.getElementById('resultBox');
-
-  let pollTimer = null;
-
-  function stopPolling(){
-    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-  }
-
-  function setStatus(cls, text, showSpinner){
-    statusRow.classList.remove('hidden');
-    statusRow.className = 'status ' + cls;
-    spinner.style.display = showSpinner ? 'block' : 'none';
-    statusText.textContent = text;
-  }
+  const queueListEl = document.getElementById('queueList');
 
   function formatDuration(s){
     const m = Math.floor(s / 60);
@@ -106,32 +100,68 @@
     return `${m}:${sec.toString().padStart(2, '0')}`;
   }
 
-  async function pollStatus(jobId){
+  function parseUrls(raw){
+    return raw.split('\n').map((s) => s.trim()).filter((s) => s.length > 0);
+  }
+
+  function makeQueueItem(url){
+    const el = document.createElement('div');
+    el.className = 'queue-item';
+    el.innerHTML = `
+      <div class="qurl">${url}</div>
+      <div class="qstatusrow">
+        <span class="qbadge waiting">等待中</span>
+        <div class="spinner" style="display:none;"></div>
+        <span class="qmsg"></span>
+      </div>
+      <div class="qresult hidden"></div>
+      <div class="qerr hidden"></div>
+    `;
+    return {
+      el,
+      badge: el.querySelector('.qbadge'),
+      spinner: el.querySelector('.spinner'),
+      msg: el.querySelector('.qmsg'),
+      resultBox: el.querySelector('.qresult'),
+      errBox: el.querySelector('.qerr'),
+    };
+  }
+
+  function setQueueItemState(item, state, text){
+    item.badge.className = 'qbadge ' + state;
+    item.badge.textContent = { waiting: '等待中', working: '處理中', ok: '完成', err: '失敗' }[state];
+    item.spinner.style.display = state === 'working' ? 'block' : 'none';
+    item.msg.textContent = text || '';
+  }
+
+  async function pollStatus(jobId, item){
     let res;
     try {
       res = await fetch(`/api/status?job_id=${jobId}`);
     } catch (err) {
-      setStatus('err', '連不到本地伺服器，請確認 server.py 還在執行中：' + err.message, false);
-      btnGenerate.disabled = false;
+      setQueueItemState(item, 'err', '');
+      item.errBox.classList.remove('hidden');
+      item.errBox.textContent = '連不到本地伺服器，請確認 server.py 還在執行中：' + err.message;
       return;
     }
     if (!res.ok) {
-      setStatus('err', '查詢進度失敗（HTTP ' + res.status + '）', false);
-      btnGenerate.disabled = false;
+      setQueueItemState(item, 'err', '');
+      item.errBox.classList.remove('hidden');
+      item.errBox.textContent = '查詢進度失敗（HTTP ' + res.status + '）';
       return;
     }
     const job = await res.json();
     if (job.stage === 'error') {
-      setStatus('err', '失敗：' + job.message, false);
-      btnGenerate.disabled = false;
+      setQueueItemState(item, 'err', '');
+      item.errBox.classList.remove('hidden');
+      item.errBox.textContent = '失敗：' + job.message;
       return;
     }
     if (job.done) {
-      setStatus('ok', '完成！', false);
-      btnGenerate.disabled = false;
+      setQueueItemState(item, 'ok', '');
       const r = job.result;
-      resultBox.classList.remove('hidden');
-      resultBox.innerHTML = `
+      item.resultBox.classList.remove('hidden');
+      item.resultBox.innerHTML = `
         標題：${r.title}<br>
         音檔：<code>${r.audio_file}</code><br>
         逐字稿：<code>${r.json_file}</code><br>
@@ -139,42 +169,71 @@
         時間軸來源：${r.used_captions ? '官方字幕校正過（較準）' : '純 Whisper（這支影片沒有官方字幕）'}<br>
         處理時間：${formatDuration(r.elapsed_seconds)}<br>
         <audio controls src="/output/${encodeURIComponent(r.audio_file)}"></audio>
-        <div class="hint">存在 <code>output/</code> 資料夾裡了。開 player.html，選這兩個檔案就能播放（會逐字高亮）。</div>
       `;
       return;
     }
-    setStatus('', job.message || '處理中...', true);
-    pollTimer = setTimeout(() => pollStatus(jobId), 1500);
+    setQueueItemState(item, 'working', job.message || '處理中...');
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await pollStatus(jobId, item);
   }
 
-  btnGenerate.addEventListener('click', async () => {
-    const url = urlInput.value.trim();
-    if (!url) { alert('請先貼 YouTube 網址'); return; }
-    stopPolling();
-    resultBox.classList.add('hidden');
-    btnGenerate.disabled = true;
-    setStatus('', '送出中...', true);
-
+  async function runOne(url, model, item){
+    setQueueItemState(item, 'working', '送出中...');
     let res;
     try {
       res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, model: modelSelect.value })
+        body: JSON.stringify({ url, model })
       });
     } catch (err) {
-      setStatus('err', '連不到本地伺服器，請先執行 python server.py：' + err.message, false);
-      btnGenerate.disabled = false;
+      setQueueItemState(item, 'err', '');
+      item.errBox.classList.remove('hidden');
+      item.errBox.textContent = '連不到本地伺服器，請先執行 python server.py：' + err.message;
       return;
     }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      setStatus('err', '啟動失敗：' + (body.error || res.status), false);
-      btnGenerate.disabled = false;
+      setQueueItemState(item, 'err', '');
+      item.errBox.classList.remove('hidden');
+      item.errBox.textContent = '啟動失敗：' + (body.error || res.status);
       return;
     }
     const data = await res.json();
-    pollStatus(data.job_id);
+    await pollStatus(data.job_id, item);
+  }
+
+  btnGenerate.addEventListener('click', async () => {
+    const urls = parseUrls(urlInput.value);
+    if (urls.length === 0) { alert('請先貼至少一個 YouTube 網址'); return; }
+    const model = modelSelect.value;
+
+    btnGenerate.disabled = true;
+    const originalLabel = btnGenerate.textContent;
+
+    // Build the new batch as one fragment so it inserts as a group above
+    // any earlier batches, preserving the URLs' own top-to-bottom order
+    // within the batch (inserting one at a time at the top would reverse
+    // them instead).
+    const fragment = document.createDocumentFragment();
+    const items = urls.map((url) => {
+      const item = makeQueueItem(url);
+      fragment.appendChild(item.el);
+      return item;
+    });
+    queueListEl.insertBefore(fragment, queueListEl.firstChild);
+
+    // Sequential on purpose -- Whisper transcription is CPU-bound, running
+    // several at once just makes each one slower from contention instead
+    // of actually finishing the batch faster.
+    for (let i = 0; i < items.length; i++) {
+      btnGenerate.textContent = `處理中... (${i + 1}/${items.length})`;
+      await runOne(urls[i], model, items[i]);
+    }
+
+    btnGenerate.disabled = false;
+    btnGenerate.textContent = originalLabel;
+    urlInput.value = '';
   });
 </script>
 </body>
