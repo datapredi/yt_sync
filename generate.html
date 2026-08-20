@@ -203,37 +203,49 @@
     await pollStatus(data.job_id, item);
   }
 
-  btnGenerate.addEventListener('click', async () => {
+  // A single persistent queue that one background loop drains -- clicking
+  // "開始產生" again while it's already processing just appends more work
+  // instead of being blocked until the current batch finishes. Model is
+  // captured per-item at submit time (not read fresh when each item
+  // starts), so changing the dropdown only affects URLs submitted after
+  // that change, not ones already queued.
+  const queue = [];
+  let processing = false;
+
+  async function drainQueue(){
+    if (processing) return; // a loop is already running and will pick up what we just pushed
+    processing = true;
+    let done = 0;
+    const total = () => done + queue.length;
+    while (queue.length > 0) {
+      const { url, model, item } = queue.shift();
+      btnGenerate.textContent = `處理中... (${done + 1}/${total()})`;
+      await runOne(url, model, item);
+      done++;
+    }
+    processing = false;
+    btnGenerate.textContent = '開始產生';
+  }
+
+  btnGenerate.addEventListener('click', () => {
     const urls = parseUrls(urlInput.value);
     if (urls.length === 0) { alert('請先貼至少一個 YouTube 網址'); return; }
     const model = modelSelect.value;
-
-    btnGenerate.disabled = true;
-    const originalLabel = btnGenerate.textContent;
 
     // Build the new batch as one fragment so it inserts as a group above
     // any earlier batches, preserving the URLs' own top-to-bottom order
     // within the batch (inserting one at a time at the top would reverse
     // them instead).
     const fragment = document.createDocumentFragment();
-    const items = urls.map((url) => {
+    urls.forEach((url) => {
       const item = makeQueueItem(url);
       fragment.appendChild(item.el);
-      return item;
+      queue.push({ url, model, item });
     });
     queueListEl.insertBefore(fragment, queueListEl.firstChild);
-
-    // Sequential on purpose -- Whisper transcription is CPU-bound, running
-    // several at once just makes each one slower from contention instead
-    // of actually finishing the batch faster.
-    for (let i = 0; i < items.length; i++) {
-      btnGenerate.textContent = `處理中... (${i + 1}/${items.length})`;
-      await runOne(urls[i], model, items[i]);
-    }
-
-    btnGenerate.disabled = false;
-    btnGenerate.textContent = originalLabel;
     urlInput.value = '';
+
+    drainQueue();
   });
 </script>
 </body>
