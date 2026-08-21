@@ -42,7 +42,7 @@
   .sentence.active{background:var(--sentence-active);}
   .word{cursor:pointer; padding:1px 2px; border-radius:4px;}
   .word:hover{text-decoration:underline;}
-  .word.active{background:var(--word-active); font-weight:700;}
+  .word.active{background:var(--word-active); text-shadow:0 0 0.4px currentColor;}
   .word.in-repeat{box-shadow: inset 0 -3px 0 var(--accent);}
   .sentence-repeat-btn, .sentence-translate-btn{
     cursor:pointer; opacity:.55; font-size:0.85em; user-select:none;
@@ -53,8 +53,9 @@
   .sentence-translate-btn:hover, .sentence-translate-btn:active{
     opacity:1; background:var(--sentence-active); border-color:var(--border);
   }
-  .translation-line{font-size:0.88em; color:var(--muted); margin:2px 0 8px 0; line-height:1.5;}
+  .translation-line{font-size:0.88em; color:var(--muted); margin:2px 0 8px 0; line-height:1.5; cursor:pointer;}
   .translation-line.hidden{display:none;}
+  .translation-line:hover{text-decoration:underline;}
   .repeat-status{
     background:var(--accent); color:#fff; border-radius:10px; padding:8px 12px; margin-bottom:12px;
     font-size:0.85rem; display:flex; align-items:center; justify-content:space-between; gap:10px;
@@ -79,7 +80,7 @@
   }
   .word.search-hit{background:#c9a7ff; color:#1f1b16;}
   @media (prefers-color-scheme: dark){ .word.search-hit{background:#7a4fd6; color:#f2ede4;} }
-  .word.search-current{outline:2px solid #7a1fd6; outline-offset:1px; font-weight:700;}
+  .word.search-current{outline:2px solid #7a1fd6; outline-offset:1px; text-shadow:0 0 0.4px currentColor;}
   .search-bar{display:flex; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap;}
   textarea#pasteTranslationInput{
     width:100%; font-family:inherit; font-size:0.85rem; padding:10px 12px; border-radius:10px;
@@ -125,13 +126,14 @@
   <div class="note">用來點句子顯示中文翻譯。Key 只存在這台裝置的瀏覽器裡，不會上傳到任何地方。</div>
   <div class="pickers">
     <button id="btnTranslateAll" disabled>🌐 全文翻譯</button>
+    <button id="btnClearTranslations" disabled>🗑️ 清除全部翻譯</button>
     <button id="btnPickMode" disabled>🔤 選字模式：關</button>
   </div>
-  <div class="note">選字模式開著的時候，點字是「選取這個字」不是重複播放；選好之後可以一次複製，貼去問 AI 或存進 Obsidian。</div>
+  <div class="note">選字模式開著的時候，點字是「選取這個字」不是重複播放；選好之後可以一次複製，貼去問 AI 或存進 Obsidian。翻譯有錯的話，點那句已顯示的中文就能清除那一句，重新翻譯。</div>
   <div class="pickers">
     <button id="btnCopyForTranslate" disabled>📋 複製待翻譯文字</button>
   </div>
-  <div class="note">不想輸入 API Key 的話，按這個把還沒翻譯的句子複製出來，貼去 ChatGPT 或 Claude 網頁版翻譯，把回覆的翻譯結果整段貼回下面，按套用就會顯示在對應的句子下面。</div>
+  <div class="note">不想輸入 API Key 的話，按這個把還沒翻譯的句子複製出來，貼去 ChatGPT 或 Claude 網頁版翻譯，把回覆的翻譯結果整段貼回下面，按套用就會顯示在對應的句子下面。這個複製按鈕只是方便把文字弄出去，不按也可以直接貼上套用。</div>
   <div class="pickers">
     <textarea id="pasteTranslationInput" placeholder="把 AI 翻譯好的結果（保留原本 1. 2. 3. 編號）整段貼在這裡" rows="3" disabled></textarea>
   </div>
@@ -171,6 +173,7 @@
   const repeatStatusEl = document.getElementById('repeatStatus');
   const pickStatusEl = document.getElementById('pickStatus');
   const btnTranslateAll = document.getElementById('btnTranslateAll');
+  const btnClearTranslations = document.getElementById('btnClearTranslations');
   const btnCopyForTranslate = document.getElementById('btnCopyForTranslate');
   const pasteTranslationInput = document.getElementById('pasteTranslationInput');
   const btnApplyPastedTranslation = document.getElementById('btnApplyPastedTranslation');
@@ -373,22 +376,28 @@
     }
   });
 
-  // No-API-key path: copy the not-yet-translated sentences as a numbered
-  // list (ready to paste straight into ChatGPT/Claude's web app), then let
-  // the user paste the reply back and match it up by number. The numbering
-  // is tied to pendingCopyForTranslateRefs (the exact list copied last),
-  // not to translationRefs' live indices, so it stays correct even if more
-  // sentences get translated by other means in between copy and paste.
-  let pendingCopyForTranslateRefs = [];
+  // No-API-key path: copy ALL sentences as a numbered list (ready to paste
+  // straight into ChatGPT/Claude's web app), then let the user paste the
+  // reply back and match it up by number. Deliberately copies every
+  // sentence, not just the still-missing ones: if only the missing ones
+  // were copied, but the user (or the AI) ends up producing a translation
+  // for the FULL transcript anyway (e.g. because a few sentences were
+  // already translated individually via the 中 button before this), line N
+  // of that reply no longer lines up with the Nth *missing* sentence --
+  // it's off by however many were already done, silently misassigning
+  // every sentence after the first gap. Keying both copy and apply off the
+  // same full, fixed-length list makes the position of every line
+  // unambiguous regardless of what's already translated.
+  //
+  // Best-effort strip of whatever numbering/bullet style the reply used
+  // ("1.", "1)", "**1.**", "1、", "- ", ...) -- purely cosmetic cleanup.
+  function stripLeadingNumbering(line){
+    return line.replace(/^\**\s*\d+\s*[.)、:：-]?\s*\**\s*/, '').trim();
+  }
 
   btnCopyForTranslate.addEventListener('click', async () => {
-    const missing = translationRefs.filter((r) => !translationCache[r.text]);
-    if (missing.length === 0) {
-      alert('全部句子都已經有翻譯了。');
-      return;
-    }
-    pendingCopyForTranslateRefs = missing;
-    const list = missing.map((r, i) => `${i + 1}. ${r.text}`).join('\n');
+    if (translationRefs.length === 0) return;
+    const list = translationRefs.map((r, i) => `${i + 1}. ${r.text}`).join('\n');
     const text = `請把下面每一句英文翻譯成自然、口語的繁體中文，保留一樣的編號格式回覆，不要加其他說明文字：\n\n${list}`;
     try {
       await navigator.clipboard.writeText(text);
@@ -400,33 +409,20 @@
     }
   });
 
-  // Best-effort strip of whatever numbering/bullet style the reply used
-  // ("1.", "1)", "**1.**", "1、", "- ", ...) -- purely cosmetic cleanup.
-  // Matching itself is positional (line N -> pending sentence N), not based
-  // on parsing the number back out, since AI replies don't reliably keep
-  // the exact "1." format asked for (markdown bold around the number,
-  // different punctuation, etc.) and a strict per-line regex silently
-  // dropped any line it didn't recognize instead of applying it.
-  function stripLeadingNumbering(line){
-    return line.replace(/^\**\s*\d+\s*[.)、:：-]?\s*\**\s*/, '').trim();
-  }
-
   btnApplyPastedTranslation.addEventListener('click', () => {
-    if (pendingCopyForTranslateRefs.length === 0) {
-      alert('請先按「複製待翻譯文字」，翻譯好之後再貼回來套用。');
+    if (translationRefs.length === 0) return;
+    const lines = pasteTranslationInput.value.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+    if (lines.length === 0) {
+      alert('請先把翻譯結果貼在上面的框框裡。');
       return;
     }
-    const lines = pasteTranslationInput.value.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
 
     let applied = 0;
-    const stillMissing = [];
-    pendingCopyForTranslateRefs.forEach((r, i) => {
+    translationRefs.forEach((r, i) => {
       const line = lines[i];
       if (line) {
         translationCache[r.text] = stripLeadingNumbering(line);
         applied++;
-      } else {
-        stillMissing.push(r);
       }
     });
     saveTranslationCache();
@@ -439,8 +435,22 @@
     });
 
     pasteTranslationInput.value = '';
-    pendingCopyForTranslateRefs = stillMissing;
-    alert(`套用了 ${applied} 句翻譯。${stillMissing.length > 0 ? `有 ${stillMissing.length} 句對不到編號，可能是格式跑掉了，可以重新複製一次再貼。` : ''}`);
+    const shortfall = translationRefs.length - applied;
+    alert(`套用了 ${applied} 句翻譯。${shortfall > 0 ? `還有 ${shortfall} 句沒對到（貼的行數比句子少），可以補貼再套用一次。` : ''}`);
+  });
+
+  // Clears cached translations for THIS transcript's sentences only (not
+  // the whole shared cache, which also holds other videos' translations).
+  btnClearTranslations.addEventListener('click', () => {
+    if (translationRefs.length === 0) return;
+    if (!confirm('確定要清除這份逐字稿全部的翻譯嗎？可以之後再重新翻譯，不會影響音檔跟文字本身。')) return;
+    translationRefs.forEach((r) => {
+      delete translationCache[r.text];
+      r.lineEl.classList.add('hidden');
+      r.lineEl.textContent = '';
+      delete r.lineEl.dataset.loaded;
+    });
+    saveTranslationCache();
   });
 
   function formatTime(s){
@@ -500,6 +510,7 @@
     searchInput.value = '';
     searchCountEl.textContent = '';
     btnTranslateAll.disabled = false;
+    btnClearTranslations.disabled = false;
     btnCopyForTranslate.disabled = false;
     pasteTranslationInput.disabled = false;
     btnApplyPastedTranslation.disabled = false;
@@ -560,6 +571,7 @@
 
       const translationLine = document.createElement('div');
       translationLine.className = 'translation-line hidden';
+      translationLine.title = '點一下清除這句翻譯，可以重新翻譯';
       transcriptEl.appendChild(translationLine);
 
       translateBtn.addEventListener('click', async (e) => {
@@ -578,6 +590,18 @@
         } catch (err) {
           translationLine.textContent = '翻譯失敗：' + err.message;
         }
+      });
+
+      // Translation wrong? Click the shown line itself to clear just that
+      // one sentence (not the whole transcript) so it can be re-translated.
+      translationLine.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (translationLine.dataset.loaded !== '1') return;
+        delete translationCache[sentence.text];
+        saveTranslationCache();
+        delete translationLine.dataset.loaded;
+        translationLine.classList.add('hidden');
+        translationLine.textContent = '';
       });
 
       // Use the clamped word timings (not the raw sentence.start/end from the
