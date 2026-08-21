@@ -80,6 +80,8 @@
       <option value="small" selected>small（預設，速度/準確度平衡）</option>
       <option value="medium">medium（較準，較慢）</option>
     </select>
+    <label for="languageSelect">語言</label>
+    <select id="languageSelect"></select>
     <div>
       <button id="btnGenerate">開始產生</button>
     </div>
@@ -91,8 +93,29 @@
 <script>
   const urlInput = document.getElementById('urlInput');
   const modelSelect = document.getElementById('modelSelect');
+  const languageSelect = document.getElementById('languageSelect');
   const btnGenerate = document.getElementById('btnGenerate');
   const queueListEl = document.getElementById('queueList');
+
+  // Populated from the server (yt_sync.LANGUAGES) instead of hardcoded here,
+  // so this list can't drift out of sync with what the backend actually
+  // supports.
+  (async () => {
+    try {
+      const res = await fetch('/api/languages');
+      const langs = await res.json();
+      languageSelect.innerHTML = '';
+      Object.entries(langs).forEach(([code, info], i) => {
+        const opt = document.createElement('option');
+        opt.value = code;
+        opt.textContent = info.label;
+        if (i === 0) opt.selected = true;
+        languageSelect.appendChild(opt);
+      });
+    } catch (err) {
+      languageSelect.innerHTML = '<option value="en">英文</option>';
+    }
+  })();
 
   function formatDuration(s){
     const m = Math.floor(s / 60);
@@ -177,14 +200,14 @@
     await pollStatus(jobId, item);
   }
 
-  async function runOne(url, model, item){
+  async function runOne(url, model, language, item){
     setQueueItemState(item, 'working', '送出中...');
     let res;
     try {
       res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, model })
+        body: JSON.stringify({ url, model, language })
       });
     } catch (err) {
       setQueueItemState(item, 'err', '');
@@ -205,10 +228,10 @@
 
   // A single persistent queue that one background loop drains -- clicking
   // "開始產生" again while it's already processing just appends more work
-  // instead of being blocked until the current batch finishes. Model is
-  // captured per-item at submit time (not read fresh when each item
-  // starts), so changing the dropdown only affects URLs submitted after
-  // that change, not ones already queued.
+  // instead of being blocked until the current batch finishes. Model and
+  // language are captured per-item at submit time (not read fresh when
+  // each item starts), so changing the dropdowns only affects URLs
+  // submitted after that change, not ones already queued.
   const queue = [];
   let processing = false;
 
@@ -218,9 +241,9 @@
     let done = 0;
     const total = () => done + queue.length;
     while (queue.length > 0) {
-      const { url, model, item } = queue.shift();
+      const { url, model, language, item } = queue.shift();
       btnGenerate.textContent = `處理中... (${done + 1}/${total()})`;
-      await runOne(url, model, item);
+      await runOne(url, model, language, item);
       done++;
     }
     processing = false;
@@ -231,6 +254,7 @@
     const urls = parseUrls(urlInput.value);
     if (urls.length === 0) { alert('請先貼至少一個 YouTube 網址'); return; }
     const model = modelSelect.value;
+    const language = languageSelect.value;
 
     // Build the new batch as one fragment so it inserts as a group above
     // any earlier batches, preserving the URLs' own top-to-bottom order
@@ -240,7 +264,7 @@
     urls.forEach((url) => {
       const item = makeQueueItem(url);
       fragment.appendChild(item.el);
-      queue.push({ url, model, item });
+      queue.push({ url, model, language, item });
     });
     queueListEl.insertBefore(fragment, queueListEl.firstChild);
     urlInput.value = '';

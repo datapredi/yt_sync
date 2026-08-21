@@ -31,6 +31,22 @@ COOKIES_PATH = Path(__file__).parent / "cookies.txt"
 POT_SERVER_DIR = Path.home() / "tools" / "bgutil-ytdlp-pot-provider" / "server"
 POT_SERVER_URL = "http://127.0.0.1:4416/ping"
 
+# uses_punctuation_split: whether this language reliably terminates
+# sentences with .!? the way English does. Thai (and several other
+# languages) don't punctuate sentences that way in casual speech, so
+# splitting on punctuation there would produce one giant "sentence" per
+# paragraph (or worse). Those languages fall back to grouping by Whisper's
+# own segment boundaries (natural speech pauses via VAD) instead -- see
+# group_by_segments(). Caption-based alignment (build_sync_json_from_captions)
+# also depends on punctuation-based splitting (via align.py's
+# split_sentences), so it's only attempted for uses_punctuation_split
+# languages; others always use the Whisper-only segment-grouped path.
+LANGUAGES = {
+    "en": {"label": "英文", "uses_punctuation_split": True, "word_join": " "},
+    "th": {"label": "泰文", "uses_punctuation_split": False, "word_join": ""},
+}
+DEFAULT_LANGUAGE = "en"
+
 
 def ensure_pot_server():
     """YouTube frequently 403s video-data requests without a PO (Proof of
@@ -92,13 +108,14 @@ def run_yt_dlp(args, **kwargs):
     return result.stdout
 
 
-def download_audio(url, out_dir):
+def download_audio(url, out_dir, language=DEFAULT_LANGUAGE):
     """Downloads audio and, in the SAME yt-dlp invocation, requests any
-    manually-uploaded (human, not auto-generated) English subtitles --
-    folding it into this call instead of a separate one avoids a whole
-    extra webpage-extraction + PO-token round-trip per video, which was
-    making the pipeline noticeably slower for no benefit. Returns the vtt
-    path too (None if this video doesn't have manual captions).
+    manually-uploaded (human, not auto-generated) subtitles in the target
+    language -- folding it into this call instead of a separate one avoids
+    a whole extra webpage-extraction + PO-token round-trip per video,
+    which was making the pipeline noticeably slower for no benefit.
+    Returns the vtt path too (None if this video doesn't have manual
+    captions in that language).
 
     Audio is encoded CBR (constant bitrate), not yt-dlp's VBR default
     (--audio-quality 0 maps to LAME's variable-bitrate mode). Confirmed by
@@ -116,7 +133,7 @@ def download_audio(url, out_dir):
     title = run_yt_dlp(["--get-title", url]).strip()
     safe_title = sanitize_filename(title)
     audio_path = out_dir / f"{safe_title}.mp3"
-    vtt_path = out_dir / f"{safe_title}.en.vtt"
+    vtt_path = out_dir / f"{safe_title}.{language}.vtt"
 
     if audio_path.exists():
         print(f"Audio already downloaded: {audio_path}")
@@ -125,7 +142,7 @@ def download_audio(url, out_dir):
     print(f"Downloading audio: {title}")
     run_yt_dlp([
         "-x", "--audio-format", "mp3", "--audio-quality", "192K",
-        "--write-subs", "--sub-langs", "en", "--sub-format", "vtt",
+        "--write-subs", "--sub-langs", language, "--sub-format", "vtt",
         "-o", str(out_dir / f"{safe_title}.%(ext)s"),
         url
     ])
@@ -170,7 +187,8 @@ def parse_vtt_to_text(vtt_path):
 def group_into_sentences(words):
     """Splits Whisper's flat word stream into sentences on .!? boundaries
     (same convention as align.py's split_sentences, applied post-hoc here
-    since there's no pre-existing sentence-split ground truth to follow)."""
+    since there's no pre-existing sentence-split ground truth to follow).
+    Only meaningful for uses_punctuation_split languages (see LANGUAGES)."""
     sentences = []
     current = []
     for w in words:
@@ -183,10 +201,31 @@ def group_into_sentences(words):
     return sentences
 
 
-def build_sync_json(words, duration):
+def group_by_segments(words):
+    """Groups words by their original Whisper segment boundaries (natural
+    speech pauses via VAD) instead of punctuation. Used for languages that
+    don't reliably terminate sentences with .!? the way English does (e.g.
+    Thai) -- punctuation-based splitting there would produce one giant
+    "sentence" per paragraph instead of usable chunks."""
+    groups = []
+    current = []
+    current_seg = None
+    for w in words:
+        if current and w.get("seg_id") != current_seg:
+            groups.append(current)
+            current = []
+        current.append(w)
+        current_seg = w.get("seg_id")
+    if current:
+        groups.append(current)
+    return groups
+
+
+def build_sync_json(words, duration, language=DEFAULT_LANGUAGE):
     """Whisper-only path: text and timing both come straight from Whisper,
     no ground truth to correct against."""
-    groups = group_into_sentences(words)
+    lang_info = LANGUAGES.get(language, LANGUAGES[DEFAULT_LANGUAGE])
+    groups = group_into_sentences(words) if lang_info["uses_punctuation_split"] else group_by_segments(words)
     sentences = []
     for group in groups:
         word_entries = [
@@ -195,7 +234,7 @@ def build_sync_json(words, duration):
         ]
         if not word_entries:
             continue
-        text = " ".join(we["text"] for we in word_entries)
+        text = lang_info["word_join"].join(we["text"] for we in word_entries)
         sentences.append({
             "text": text,
             "start": word_entries[0]["start"],
@@ -231,7 +270,7 @@ def checkpoint_path_for(audio_path):
     return audio_path.with_name(audio_path.stem + ".transcribe_checkpoint.json")
 
 
-def transcribe(audio_path, model_size="small", on_progress=None):
+def transcribe(audio_path, model_size="small", language=DEFAULT_LANGUAGE, on_progress=None):
     """Transcribes with periodic checkpointing: for long videos (whisper is
     the slow, CPU-only step -- easily 30-90+ min for a 2hr video), losing
     all progress to a crash/interruption partway through would be a real
@@ -266,14 +305,21 @@ def transcribe(audio_path, model_size="small", on_progress=None):
     t0 = time.time()
     clip_timestamps = str(round(resume_from, 3)) if resume_from > 0 else "0"
     segments, info = model.transcribe(
-        str(audio_path), word_timestamps=True, language="en",
+        str(audio_path), word_timestamps=True, language=language,
         clip_timestamps=clip_timestamps,
     )
 
+    # seg_id lets build_sync_json() group by Whisper's own segment
+    # boundaries (natural speech pauses) for languages that don't
+    # punctuate sentences the way English does -- see group_by_segments().
+    # Continues numbering from where a resumed checkpoint left off instead
+    # of restarting at 0, so segment groups don't collide across a resume.
+    next_seg_id = (max((w.get("seg_id", -1) for w in words), default=-1) + 1) if words else 0
+
     last_checkpoint = time.time()
-    for seg in segments:
+    for seg_offset, seg in enumerate(segments):
         for w in seg.words:
-            words.append({"start": round(w.start, 3), "end": round(w.end, 3), "word": w.word})
+            words.append({"start": round(w.start, 3), "end": round(w.end, 3), "word": w.word, "seg_id": next_seg_id + seg_offset})
         if time.time() - last_checkpoint > CHECKPOINT_INTERVAL_SECONDS:
             with open(checkpoint_path, "w", encoding="utf-8") as f:
                 json.dump(words, f)
@@ -284,13 +330,14 @@ def transcribe(audio_path, model_size="small", on_progress=None):
     return words, info.duration
 
 
-def process_video(url, model_size="small", out_dir=None, on_progress=None):
+def process_video(url, model_size="small", language=DEFAULT_LANGUAGE, out_dir=None, on_progress=None):
     """Full pipeline shared by the CLI (main()) and server.py's background
     job: download audio, transcribe, use manual captions for timing
     correction when available, write the sync JSON. on_progress(msg) is
     called at each stage for callers that want to surface live status."""
     out_dir = out_dir or OUTPUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
+    lang_info = LANGUAGES.get(language, LANGUAGES[DEFAULT_LANGUAGE])
 
     def progress(msg):
         print(msg)
@@ -298,13 +345,17 @@ def process_video(url, model_size="small", out_dir=None, on_progress=None):
             on_progress(msg)
 
     progress("正在下載音檔（會順便檢查有沒有官方字幕）...")
-    audio_path, safe_title, vtt_path = download_audio(url, out_dir)
+    audio_path, safe_title, vtt_path = download_audio(url, out_dir, language=language)
 
     progress(f"正在載入 Whisper 模型（{model_size}），第一次會比較久...")
-    words, duration = transcribe(audio_path, model_size, on_progress=on_progress)
+    words, duration = transcribe(audio_path, model_size, language=language, on_progress=on_progress)
 
+    # Caption-based alignment depends on align.py's punctuation-based
+    # sentence splitting, which doesn't work for languages like Thai that
+    # don't reliably terminate sentences with .!?. Only attempt it for
+    # languages where that assumption holds.
     caption_text = None
-    if vtt_path:
+    if vtt_path and lang_info["uses_punctuation_split"]:
         try:
             caption_text = parse_vtt_to_text(vtt_path)
             if not caption_text.strip():
@@ -317,7 +368,7 @@ def process_video(url, model_size="small", out_dir=None, on_progress=None):
         sync_data = build_sync_json_from_captions(caption_text, words, duration)
     else:
         progress("這支影片沒有官方字幕，直接用 Whisper 自己聽出來的文字跟時間。")
-        sync_data = build_sync_json(words, duration)
+        sync_data = build_sync_json(words, duration, language=language)
 
     json_path = out_dir / f"{safe_title}.json"
     with open(json_path, "w", encoding="utf-8") as f:
@@ -334,13 +385,15 @@ def process_video(url, model_size="small", out_dir=None, on_progress=None):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python yt_sync.py <youtube_url> [model_size]")
+        print("Usage: python yt_sync.py <youtube_url> [model_size] [language]")
+        print(f"  language: one of {list(LANGUAGES.keys())} (default: {DEFAULT_LANGUAGE})")
         sys.exit(1)
 
     url = sys.argv[1]
     model_size = sys.argv[2] if len(sys.argv) > 2 else "small"
+    language = sys.argv[3] if len(sys.argv) > 3 else DEFAULT_LANGUAGE
 
-    result = process_video(url, model_size)
+    result = process_video(url, model_size, language=language)
     sync_data = result["sync_data"]
 
     print()

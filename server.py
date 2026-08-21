@@ -30,7 +30,7 @@ jobs = {}
 jobs_lock = threading.Lock()
 
 
-def run_job(job_id, url, model_size):
+def run_job(job_id, url, model_size, language):
     def set_state(**kwargs):
         with jobs_lock:
             jobs[job_id].update(kwargs)
@@ -38,7 +38,7 @@ def run_job(job_id, url, model_size):
     t0 = time.time()
     try:
         result = yt_sync.process_video(
-            url, model_size, out_dir=OUTPUT_DIR,
+            url, model_size, language=language, out_dir=OUTPUT_DIR,
             on_progress=lambda msg: set_state(stage="working", message=msg)
         )
         sync_data = result["sync_data"]
@@ -83,6 +83,8 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self._serve_file(BASE_DIR / "generate.html", "text/html; charset=utf-8")
+        elif parsed.path == "/api/languages":
+            self._send_json(yt_sync.LANGUAGES)
         elif parsed.path == "/api/status":
             qs = parse_qs(parsed.query)
             job_id = (qs.get("job_id") or [""])[0]
@@ -117,14 +119,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         url = (payload.get("url") or "").strip()
         model_size = (payload.get("model") or "small").strip()
+        language = (payload.get("language") or yt_sync.DEFAULT_LANGUAGE).strip()
         if not url:
             self._send_json({"error": "缺少 url"}, status=400)
+            return
+        if language not in yt_sync.LANGUAGES:
+            self._send_json({"error": f"不支援的語言：{language}"}, status=400)
             return
 
         job_id = uuid.uuid4().hex[:12]
         with jobs_lock:
             jobs[job_id] = {"stage": "queued", "message": "已加入佇列...", "done": False, "error": None, "result": None}
-        threading.Thread(target=run_job, args=(job_id, url, model_size), daemon=True).start()
+        threading.Thread(target=run_job, args=(job_id, url, model_size, language), daemon=True).start()
         self._send_json({"job_id": job_id})
 
     def log_message(self, format, *args):
