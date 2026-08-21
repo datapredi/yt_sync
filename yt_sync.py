@@ -184,16 +184,29 @@ def parse_vtt_to_text(vtt_path):
     return " ".join(deduped)
 
 
+LONG_PAUSE_THRESHOLD_SECONDS = 0.5
+
+
 def group_into_sentences(words):
     """Splits Whisper's flat word stream into sentences on .!? boundaries
     (same convention as align.py's split_sentences, applied post-hoc here
     since there's no pre-existing sentence-split ground truth to follow).
-    Only meaningful for uses_punctuation_split languages (see LANGUAGES)."""
+    Only meaningful for uses_punctuation_split languages (see LANGUAGES).
+
+    Also splits on an unusually long pause between words even without
+    punctuation, as a fallback: Whisper occasionally stops predicting
+    terminal punctuation for extended stretches of a long recording
+    (observed in practice: a single "sentence" spanning 2599 words / ~16
+    minutes with zero periods anywhere in it) -- without this fallback,
+    grouping would keep appending forever until the next period, however
+    far away that turns out to be."""
     sentences = []
     current = []
-    for w in words:
+    for i, w in enumerate(words):
         current.append(w)
-        if re.search(r'[.!?]["\')\]]*$', w["word"].strip()):
+        has_terminal_punct = re.search(r'[.!?]["\')\]]*$', w["word"].strip())
+        next_gap = (words[i + 1]["start"] - w["end"]) if i + 1 < len(words) else 0
+        if has_terminal_punct or next_gap > LONG_PAUSE_THRESHOLD_SECONDS:
             sentences.append(current)
             current = []
     if current:
