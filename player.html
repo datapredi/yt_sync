@@ -81,6 +81,8 @@
   .word.search-hit{background:#c9a7ff; color:#1f1b16;}
   @media (prefers-color-scheme: dark){ .word.search-hit{background:#7a4fd6; color:#f2ede4;} }
   .word.search-current{outline:2px solid #7a1fd6; outline-offset:1px; text-shadow:0 0 0.4px currentColor;}
+  .word.marked{border-bottom:2px solid #e64545;}
+  @media (prefers-color-scheme: dark){ .word.marked{border-bottom-color:#ff7a7a;} }
   .search-bar{display:flex; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap;}
   textarea#pasteTranslationInput{
     width:100%; font-family:inherit; font-size:0.85rem; padding:10px 12px; border-radius:10px;
@@ -226,6 +228,19 @@
   let translationCache = {};
   try { translationCache = JSON.parse(localStorage.getItem(TRANSLATION_CACHE_LS)) || {}; } catch(e) { translationCache = {}; }
   function saveTranslationCache(){ localStorage.setItem(TRANSLATION_CACHE_LS, JSON.stringify(translationCache)); }
+
+  // Words copied out of pick-mode are words the user flagged as unfamiliar
+  // ("I don't know this"), so mark them persistently and highlight every
+  // occurrence in the transcript -- not just this video, any video, since
+  // it's the word itself (not this specific line) that's unfamiliar. Keyed
+  // by normalized text (flat, global), same pattern as translationCache.
+  const MARKED_WORDS_LS = "yt_sync_marked_words_v1";
+  let markedWords = new Set();
+  try { markedWords = new Set(JSON.parse(localStorage.getItem(MARKED_WORDS_LS)) || []); } catch(e) { markedWords = new Set(); }
+  function saveMarkedWords(){ localStorage.setItem(MARKED_WORDS_LS, JSON.stringify(Array.from(markedWords))); }
+  function applyMarkedHighlights(){
+    flatWords.forEach((w) => { w.el.classList.toggle('marked', markedWords.has(normalizeForSearch(w.text))); });
+  }
 
   async function translateSentence(text){
     if (translationCache[text]) return translationCache[text];
@@ -609,6 +624,7 @@
       sentenceEls.push({ el: sEl, start: flatWords[sentStartIdx].start, end: flatWords[sentEndIdx].end });
       translationRefs.push({ text: sentence.text, lineEl: translationLine });
     });
+    applyMarkedHighlights();
   }
 
   function onWordClick(idx){
@@ -684,6 +700,12 @@
     copyBtn.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(pickedText());
+        // Copying a word means "I don't know this" -- mark it persistently
+        // so every occurrence of it (this video and future ones) is
+        // highlighted in the transcript, not just while it's selected.
+        pickedIndices.forEach((idx) => markedWords.add(normalizeForSearch(flatWords[idx].text)));
+        saveMarkedWords();
+        applyMarkedHighlights();
         copyBtn.textContent = '已複製 ✓';
         setTimeout(() => { copyBtn.textContent = '📋 複製'; }, 1500);
       } catch (err) {
