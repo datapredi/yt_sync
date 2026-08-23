@@ -72,7 +72,7 @@
     font-size:0.85rem; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
   }
   .pick-status.hidden{display:none;}
-  .pick-status .pick-words{flex:1 1 auto; min-width:0; word-break:break-word;}
+  .pick-status .pick-words{flex:1 1 auto; min-width:0; word-break:break-word; white-space:pre-wrap;}
   .pick-status .pick-actions{display:flex; gap:8px; flex:0 0 auto;}
   .pick-status button{
     font-size:0.78rem; padding:4px 10px; border-radius:8px; border:1px solid var(--accent);
@@ -633,10 +633,32 @@
     updatePickStatus();
   }
 
-  function pickedText(){
+  function pickedGroups(){
     // Always in transcript reading order, not tap order, so the copied text
     // reads naturally regardless of which order the words were picked in.
-    return Array.from(pickedIndices).sort((a, b) => a - b).map((i) => flatWords[i].text).join(' ');
+    // Consecutive (adjacent-index) taps are treated as one phrase; a gap
+    // between indices starts a new group -- so tapping several words in a
+    // row for a phrase/collocation keeps them together, while separately
+    // tapped single words elsewhere in the transcript stay their own item.
+    const sorted = Array.from(pickedIndices).sort((a, b) => a - b);
+    const groups = [];
+    let current = [];
+    sorted.forEach((idx) => {
+      if (current.length && idx !== current[current.length - 1] + 1) {
+        groups.push(current);
+        current = [];
+      }
+      current.push(idx);
+    });
+    if (current.length) groups.push(current);
+    return groups;
+  }
+
+  function pickedText(){
+    // One group per line -- matches the flashcard app's paste-import format
+    // (one word/phrase per line), so a phrase pasted there stays one entry
+    // instead of being split back into separate words.
+    return pickedGroups().map((g) => g.map((i) => flatWords[i].text).join(' ')).join('\n');
   }
 
   function updatePickStatus(){
@@ -648,9 +670,10 @@
     pickStatusEl.classList.remove('hidden');
     pickStatusEl.innerHTML = '';
 
+    const groups = pickedGroups();
     const words = document.createElement('span');
     words.className = 'pick-words';
-    words.textContent = `已選 ${pickedIndices.size} 個字：${pickedText()}`;
+    words.textContent = `已選 ${groups.length} 組（共 ${pickedIndices.size} 字）：\n${pickedText()}`;
     pickStatusEl.appendChild(words);
 
     const actions = document.createElement('span');
