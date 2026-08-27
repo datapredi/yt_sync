@@ -1,0 +1,21 @@
+# Python deps for yt_sync.py / server.py   (align.py uses only the stdlib)
+#
+# Needs Python 3.10+. yt-dlp dropped 3.9, and the last 3.9-compatible
+# release (2025.10.14) is now too old for YouTube (every format 403s).
+# Set up with a venv:
+#
+#   /opt/homebrew/opt/python@3.12/bin/python3.12 -m venv .venv
+#   .venv/bin/pip install -r requirements.txt
+#   .venv/bin/python server.py
+#
+faster-whisper
+yt-dlp
+bgutil-ytdlp-pot-provider   # PO token plugin; YouTube 403s downloads without it
+
+# Also required, installed outside pip (Homebrew):
+#   ffmpeg   -- brew install ffmpeg
+#   deno     -- brew install deno   (JS runtime yt-dlp now needs for some formats)
+#
+# PO token provider server (yt_sync.py auto-starts it from ~/tools):
+#   git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider ~/tools/bgutil-ytdlp-pot-provider
+#   cd ~/tools/bgutil-ytdlp-pot-provider/server && npm install && npx tsc

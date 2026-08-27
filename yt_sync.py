@@ -23,8 +23,13 @@ from pathlib import Path
 
 from faster_whisper import WhisperModel
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "audio_transcript_sync"))
-import align  # noqa: E402  (reused for its diff+interpolation alignment logic)
+# align.py was reconstructed into this repo (the original sibling project
+# audio_transcript_sync/ was lost with the machine it lived on). The local
+# copy next to this file takes priority; the old sibling path is still tried
+# as a fallback in case that project is ever restored.
+sys.path.append(str(Path(__file__).parent.parent / "audio_transcript_sync"))
+sys.path.insert(0, str(Path(__file__).parent))
+import align  # noqa: E402  (reconstructed; diff+interpolation alignment logic)
 
 OUTPUT_DIR = Path(__file__).parent / "output"
 COOKIES_PATH = Path(__file__).parent / "cookies.txt"

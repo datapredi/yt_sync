@@ -2,3 +2,4 @@ output/
 cookies.txt
 __pycache__/
 *.pyc
+.venv/
