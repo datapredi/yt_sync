@@ -1,0 +1,27 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "server.py (web UI)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/server.py",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "yt_sync.py <url>",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/yt_sync.py",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "args": ["${input:youtubeUrl}"]
+    }
+  ],
+  "inputs": [
+    { "id": "youtubeUrl", "type": "promptString", "description": "YouTube URL" }
+  ]
+}

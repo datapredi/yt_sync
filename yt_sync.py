@@ -13,10 +13,24 @@ correction pass available).
 
 Usage: python yt_sync.py <youtube_url> [model_size]
 """
+import sys
+
+# yt-dlp dropped Python 3.9, and its last 3.9-compatible build (2025.10.14)
+# now 403s every YouTube format. macOS's system python is 3.9, so a run
+# launched with the wrong interpreter fails deep inside yt-dlp with a
+# cryptic "HTTP Error 403: Forbidden" -- catch it here with a clear message.
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        "yt_sync needs Python 3.10+ (running {}). Use the project venv:\n"
+        "  .venv/bin/python server.py            # web UI\n"
+        "  .venv/bin/python yt_sync.py <url>     # CLI\n"
+        "VS Code: Cmd+Shift+P -> 'Python: Select Interpreter' -> ./.venv/bin/python"
+        .format(sys.version.split()[0])
+    )
+
 import json
 import re
 import subprocess
-import sys
 import time
 import urllib.request
 from pathlib import Path

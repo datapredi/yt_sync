@@ -12,6 +12,10 @@ faster-whisper
 yt-dlp
 bgutil-ytdlp-pot-provider   # PO token plugin; YouTube 403s downloads without it
 
+# YouTube breaks yt-dlp stable often ("HTTP 403", "The page needs to be
+# reloaded"). When that happens, move to the nightly channel:
+#   .venv/bin/python -m pip install -U --pre "yt-dlp[default]"
+
 # Also required, installed outside pip (Homebrew):
 #   ffmpeg   -- brew install ffmpeg
 #   deno     -- brew install deno   (JS runtime yt-dlp now needs for some formats)
