@@ -63,6 +63,9 @@ POT_SERVER_URL = "http://127.0.0.1:4416/ping"
 LANGUAGES = {
     "en": {"label": "英文", "uses_punctuation_split": True, "word_join": " "},
     "th": {"label": "泰文", "uses_punctuation_split": False, "word_join": ""},
+    # 越南文用空格分音節，句子也用 .!? 收尾（Whisper 的越南文輸出帶標點），
+    # 所以走跟英文一樣的「標點切句 + 字幕對齊」那條路。
+    "vi": {"label": "越南文", "uses_punctuation_split": True, "word_join": " "},
 }
 DEFAULT_LANGUAGE = "en"
 
