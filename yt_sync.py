@@ -410,7 +410,8 @@ def embed_transcript(audio_path, sync_data):
 
 
 def embed_existing(out_dir=None):
-    """Backfill: embed each <title>.json in out_dir into its <title>.mp3."""
+    """Backfill for files made before transcripts were embedded: embed each
+    <title>.json in out_dir into its <title>.mp3."""
     out_dir = out_dir or OUTPUT_DIR
     count = 0
     for json_path in sorted(out_dir.glob("*.json")):
@@ -464,15 +465,13 @@ def process_video(url, model_size="small", language=DEFAULT_LANGUAGE, out_dir=No
         progress("這支影片沒有官方字幕，直接用 Whisper 自己聽出來的文字跟時間。")
         sync_data = build_sync_json(words, duration, language=language)
 
-    json_path = out_dir / f"{safe_title}.json"
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(sync_data, f, ensure_ascii=False, indent=2)
+    # The transcript lives only inside the mp3 (no separate .json), so there's
+    # exactly one file per video and nothing to pick wrong on the phone.
     embed_transcript(audio_path, sync_data)
 
     return {
         "title": safe_title,
         "audio_path": audio_path,
-        "json_path": json_path,
         "sync_data": sync_data,
         "used_captions": caption_text is not None,
     }
@@ -498,7 +497,6 @@ def main():
     print()
     print("Done!")
     print(f"Audio: {result['audio_path']}")
-    print(f"Sync JSON: {result['json_path']}")
     print(f"Sentences: {len(sync_data['sentences'])}")
     print(f"Timing source: {'official captions (aligned)' if result['used_captions'] else 'Whisper only'}")
     print()

@@ -187,7 +187,6 @@
       item.resultBox.innerHTML = `
         標題：${r.title}<br>
         音檔：<code>${r.audio_file}</code><br>
-        逐字稿：<code>${r.json_file}</code><br>
         長度：${formatDuration(r.duration)}，共 ${r.sentences} 句<br>
         時間軸來源：${r.used_captions ? '官方字幕校正過（較準）' : '純 Whisper（這支影片沒有官方字幕）'}<br>
         處理時間：${formatDuration(r.elapsed_seconds)}<br>

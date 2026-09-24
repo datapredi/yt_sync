@@ -116,11 +116,11 @@
 <body>
 <div class="wrap">
   <h1>🎧 YouTube 逐字稿同步播放器</h1>
-  <div class="sub">先用 yt_sync.py 把 YouTube 影片轉成音檔＋同步逐字稿，再到這裡選檔案播放：選 mp3 或 json 都可以，會自動判斷是音檔還是逐字稿。新的 mp3 裡已經存了逐字稿，選它一個就好。播放時目前唸到的字會變色、自動捲到那句。</div>
+  <div class="sub">先用 yt_sync.py 把 YouTube 影片轉成音檔＋同步逐字稿，再到這裡選 mp3 播放，逐字稿已經存在 mp3 裡面，選它一個就好。（比較舊、沒存逐字稿的 mp3，可以連同它的 json 一起選。）播放時目前唸到的字會變色、自動捲到那句。</div>
   <div class="note">音檔跟同步逐字稿都只在你自己的裝置上選取播放，不會上傳到任何地方。</div>
 
   <div class="pickers">
-    <label class="filebtn" for="audioInput">📂 選擇檔案（mp3 或 json）</label>
+    <label class="filebtn" for="audioInput">📂 選擇檔案 (mp3)</label>
     <input type="file" id="audioInput" multiple>
   </div>
   <div class="now-title hidden" id="nowTitle"></div>

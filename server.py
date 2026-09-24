@@ -47,7 +47,6 @@ def run_job(job_id, url, model_size, language):
             result={
                 "title": result["title"],
                 "audio_file": result["audio_path"].name,
-                "json_file": result["json_path"].name,
                 "sentences": len(sync_data["sentences"]),
                 "duration": sync_data["duration"],
                 "used_captions": result["used_captions"],
