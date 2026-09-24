@@ -116,14 +116,12 @@
 <body>
 <div class="wrap">
   <h1>🎧 YouTube 逐字稿同步播放器</h1>
-  <div class="sub">先用 yt_sync.py 把 YouTube 影片轉成音檔＋同步逐字稿，再到這裡選音檔播放——逐字稿已經存在 mp3 裡面，不用另外選。比較舊、沒存進去的 mp3，可以選音檔時連 json 一起勾選，或再按「另外選逐字稿」。播放時目前唸到的字會變色、自動捲到那句。</div>
+  <div class="sub">先用 yt_sync.py 把 YouTube 影片轉成音檔＋同步逐字稿，再到這裡選檔案播放：選 mp3 或 json 都可以，會自動判斷是音檔還是逐字稿。新的 mp3 裡已經存了逐字稿，選它一個就好。播放時目前唸到的字會變色、自動捲到那句。</div>
   <div class="note">音檔跟同步逐字稿都只在你自己的裝置上選取播放，不會上傳到任何地方。</div>
 
   <div class="pickers">
-    <label class="filebtn" for="audioInput">選擇音檔 (mp3)</label>
+    <label class="filebtn" for="audioInput">📂 選擇檔案（mp3 或 json）</label>
     <input type="file" id="audioInput" multiple>
-    <label class="filebtn" for="syncInput">另外選逐字稿 (json)</label>
-    <input type="file" id="syncInput">
   </div>
   <div class="now-title hidden" id="nowTitle"></div>
   <div class="pickers">
@@ -176,7 +174,6 @@
 
 <script>
   const audioInput = document.getElementById('audioInput');
-  const syncInput = document.getElementById('syncInput');
   const statusEl = document.getElementById('status');
   const repeatStatusEl = document.getElementById('repeatStatus');
   const pickStatusEl = document.getElementById('pickStatus');
@@ -484,6 +481,8 @@
   function updateStatus(){
     if (audioReady && syncReady) {
       statusEl.textContent = '就緒，可以播放了';
+    } else if (syncReady) {
+      statusEl.textContent = '已載入逐字稿，再選一次它的 mp3 就能播放';
     } else {
       statusEl.textContent = `已選：${audioReady ? '音檔 ✓' : '音檔 ✗'}　${syncReady ? '同步稿 ✓' : '同步稿 ✗'}`;
     }
@@ -563,11 +562,14 @@
     reader.readAsText(file, 'UTF-8');
   }
 
+  // 只有一個選檔按鈕：依副檔名／檔案類型自己判斷選到的是音檔還是逐字稿，
+  // 兩個一起選也行。只選了音檔時，先找 mp3 裡內嵌的逐字稿（見上面）。
+  const isSyncFile = f => /\.json$/i.test(f.name) || f.type === 'application/json';
   audioInput.addEventListener('change', async (e) => {
     const files = Array.from(e.target.files);
-    const file = files.find(f => !/\.json$/i.test(f.name));
-    const jsonFile = files.find(f => /\.json$/i.test(f.name));
-    if (!file && !jsonFile) return;
+    e.target.value = ''; // 讓同一個檔案可以再選一次
+    const jsonFile = files.find(isSyncFile);
+    const file = files.find(f => !isSyncFile(f));
     if (file) {
       audioTitle = titleFromFileName(file.name);
       updateTitle();
@@ -576,19 +578,14 @@
       updateStatus();
     }
     if (jsonFile) { loadSyncFile(jsonFile); return; }
+    if (!file) return;
     try {
       const data = await readEmbeddedTranscript(file);
       if (data) { loadSyncData(data, file.name); return; }
     } catch (err) {
       console.warn('讀取 mp3 內嵌逐字稿失敗', err);
     }
-    statusEl.textContent = '這個 mp3 裡沒有存逐字稿（比較舊的檔案），請按「另外選逐字稿 (json)」';
-  });
-
-  syncInput.addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    loadSyncFile(file);
+    statusEl.textContent = '這個 mp3 裡沒有存逐字稿（比較舊的檔案），請再選一次它的 json';
   });
 
   function renderTranscript(data){
