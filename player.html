@@ -20,7 +20,10 @@
     margin:0; font-family:-apple-system,"Segoe UI",Helvetica,Arial,"PingFang TC","Microsoft JhengHei",sans-serif;
     background:var(--bg); color:var(--text); min-height:100vh;
   }
-  .wrap{max-width:720px; margin:0 auto; padding:20px 16px 100px;}
+  .wrap{max-width:720px; margin:0 auto; padding:20px 16px 130px;}
+  .now-title{font-weight:600; font-size:1rem; line-height:1.4; margin:-4px 0 16px; overflow-wrap:anywhere;}
+  .now-title.hidden, .bar-title.hidden{display:none;}
+  .now-title .mismatch{display:block; font-weight:400; font-size:0.8rem; color:var(--accent); margin-top:4px;}
   h1{font-size:1.25rem; margin:0 0 4px;}
   .sub{color:var(--muted); font-size:0.85rem; margin-bottom:16px;}
   .note{font-size:0.75rem; color:var(--muted); margin:-6px 0 16px; line-height:1.5;}
@@ -98,8 +101,9 @@
   .empty{color:var(--muted); text-align:center; padding:40px 20px;}
   .player-bar{
     position:fixed; left:0; right:0; bottom:0; background:var(--card); border-top:1px solid var(--border);
-    padding:10px 16px; display:flex; align-items:center; gap:10px;
+    padding:10px 16px; display:flex; flex-wrap:wrap; align-items:center; gap:10px;
   }
+  .bar-title{flex:1 0 100%; margin-bottom:-4px; font-size:0.78rem; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
   .player-bar button{flex:0 0 auto;}
   .player-bar input[type=range]{flex:1;}
   .time{font-size:0.78rem; color:var(--muted); min-width:80px; text-align:center;}
@@ -121,6 +125,7 @@
     <label class="filebtn" for="syncInput">選擇同步逐字稿 (json)</label>
     <input type="file" id="syncInput">
   </div>
+  <div class="now-title hidden" id="nowTitle"></div>
   <div class="pickers">
     <input type="password" id="apiKeyInput" placeholder="Anthropic API Key (sk-ant-...)">
     <button id="btnSaveKey">儲存 Key</button>
@@ -157,6 +162,7 @@
 
 <audio id="audio"></audio>
 <div class="player-bar">
+  <div class="bar-title hidden" id="barTitle"></div>
   <button id="btnPlayPause">▶️</button>
   <input type="range" id="seekBar" min="0" max="0" step="0.01" value="0">
   <select id="speedSelect">
@@ -483,9 +489,35 @@
     }
   }
 
+  // 檔名就是影片標題（yt_sync.py 用標題存檔），選好檔案後把它顯示在上面跟
+  // 底下播放列，手機上檔案一多才知道現在播的是哪一支。音檔跟逐字稿檔名對不
+  // 起來時也提醒一下，避免兩個選到不同影片。
+  const nowTitleEl = document.getElementById('nowTitle');
+  const barTitleEl = document.getElementById('barTitle');
+  let audioTitle = '', syncTitle = '';
+  function titleFromFileName(name){ return name.replace(/\.[^.]+$/, ''); }
+  function updateTitle(){
+    const title = audioTitle || syncTitle;
+    if (!title) return;
+    const mismatch = audioTitle && syncTitle && audioTitle !== syncTitle;
+    nowTitleEl.textContent = '🎬 ' + title;
+    if (mismatch) {
+      const warn = document.createElement('span');
+      warn.className = 'mismatch';
+      warn.textContent = `⚠️ 逐字稿是另一支影片：${syncTitle}`;
+      nowTitleEl.appendChild(warn);
+    }
+    barTitleEl.textContent = (mismatch ? '⚠️ ' : '') + title;
+    nowTitleEl.classList.remove('hidden');
+    barTitleEl.classList.remove('hidden');
+    document.title = title;
+  }
+
   audioInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    audioTitle = titleFromFileName(file.name);
+    updateTitle();
     audio.src = URL.createObjectURL(file);
     audioReady = true;
     updateStatus();
@@ -494,6 +526,8 @@
   syncInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    syncTitle = titleFromFileName(file.name);
+    updateTitle();
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
