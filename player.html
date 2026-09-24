@@ -116,13 +116,13 @@
 <body>
 <div class="wrap">
   <h1>🎧 YouTube 逐字稿同步播放器</h1>
-  <div class="sub">先用 yt_sync.py 把 YouTube 影片轉成音檔＋同步逐字稿，再到這裡選那兩個檔案播放。播放時目前唸到的字會變色、自動捲到那句。</div>
+  <div class="sub">先用 yt_sync.py 把 YouTube 影片轉成音檔＋同步逐字稿，再到這裡選音檔播放——逐字稿已經存在 mp3 裡面，不用另外選。比較舊、沒存進去的 mp3，可以選音檔時連 json 一起勾選，或再按「另外選逐字稿」。播放時目前唸到的字會變色、自動捲到那句。</div>
   <div class="note">音檔跟同步逐字稿都只在你自己的裝置上選取播放，不會上傳到任何地方。</div>
 
   <div class="pickers">
     <label class="filebtn" for="audioInput">選擇音檔 (mp3)</label>
-    <input type="file" id="audioInput">
-    <label class="filebtn" for="syncInput">選擇同步逐字稿 (json)</label>
+    <input type="file" id="audioInput" multiple>
+    <label class="filebtn" for="syncInput">另外選逐字稿 (json)</label>
     <input type="file" id="syncInput">
   </div>
   <div class="now-title hidden" id="nowTitle"></div>
@@ -513,33 +513,82 @@
     document.title = title;
   }
 
-  audioInput.addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    audioTitle = titleFromFileName(file.name);
-    updateTitle();
-    audio.src = URL.createObjectURL(file);
-    audioReady = true;
-    updateStatus();
-  });
+  // yt_sync.py 把同步逐字稿存在 mp3 的 ID3 標籤裡（TXXX 欄位，描述是
+  // "yt_sync"），這樣手機上只要選一個 mp3 就好。只讀檔案開頭的標籤區，不用
+  // 把整個音檔讀進記憶體。找不到就回傳 null（舊的 mp3 沒存進去）。
+  async function readEmbeddedTranscript(file){
+    const head = new Uint8Array(await file.slice(0, 10).arrayBuffer());
+    if (head.length < 10 || head[0] !== 0x49 || head[1] !== 0x44 || head[2] !== 0x33) return null; // "ID3"
+    const version = head[3];
+    const syncsafe = (b, i) => (b[i] << 21) | (b[i+1] << 14) | (b[i+2] << 7) | b[i+3];
+    const tagSize = syncsafe(head, 6);
+    const tag = new Uint8Array(await file.slice(10, 10 + tagSize).arrayBuffer());
+    let pos = 0;
+    while (pos + 10 <= tag.length) {
+      const id = String.fromCharCode(tag[pos], tag[pos+1], tag[pos+2], tag[pos+3]);
+      if (!/^[A-Z0-9]{4}$/.test(id)) break; // 到了 padding
+      const size = version === 4 ? syncsafe(tag, pos + 4)
+        : ((tag[pos+4] << 24) >>> 0) + (tag[pos+5] << 16) + (tag[pos+6] << 8) + tag[pos+7];
+      const body = tag.subarray(pos + 10, pos + 10 + size);
+      pos += 10 + size;
+      if (id !== 'TXXX' || body[0] !== 3) continue; // 只認 UTF-8 的 TXXX
+      const sep = body.indexOf(0, 1);
+      if (sep < 0) continue;
+      const desc = new TextDecoder().decode(body.subarray(1, sep));
+      if (desc !== 'yt_sync') continue;
+      let end = body.length;
+      while (end > sep + 1 && body[end - 1] === 0) end--;
+      return JSON.parse(new TextDecoder().decode(body.subarray(sep + 1, end)));
+    }
+    return null;
+  }
 
-  syncInput.addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    syncTitle = titleFromFileName(file.name);
+  function loadSyncData(data, fileName){
+    syncTitle = titleFromFileName(fileName);
     updateTitle();
+    renderTranscript(data);
+    syncReady = true;
+    updateStatus();
+  }
+
+  function loadSyncFile(file){
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const data = JSON.parse(ev.target.result);
-        renderTranscript(data);
-        syncReady = true;
-        updateStatus();
+        loadSyncData(JSON.parse(ev.target.result), file.name);
       } catch (err) {
         alert('同步逐字稿讀取失敗：' + err.message);
       }
     };
     reader.readAsText(file, 'UTF-8');
+  }
+
+  audioInput.addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files);
+    const file = files.find(f => !/\.json$/i.test(f.name));
+    const jsonFile = files.find(f => /\.json$/i.test(f.name));
+    if (!file && !jsonFile) return;
+    if (file) {
+      audioTitle = titleFromFileName(file.name);
+      updateTitle();
+      audio.src = URL.createObjectURL(file);
+      audioReady = true;
+      updateStatus();
+    }
+    if (jsonFile) { loadSyncFile(jsonFile); return; }
+    try {
+      const data = await readEmbeddedTranscript(file);
+      if (data) { loadSyncData(data, file.name); return; }
+    } catch (err) {
+      console.warn('讀取 mp3 內嵌逐字稿失敗', err);
+    }
+    statusEl.textContent = '這個 mp3 裡沒有存逐字稿（比較舊的檔案），請按「另外選逐字稿 (json)」';
+  });
+
+  syncInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    loadSyncFile(file);
   });
 
   function renderTranscript(data){

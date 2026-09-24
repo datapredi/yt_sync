@@ -390,6 +390,40 @@ def transcribe(audio_path, model_size="small", language=DEFAULT_LANGUAGE, on_pro
     return words, info.duration
 
 
+EMBED_TAG_DESC = "yt_sync"
+
+
+def embed_transcript(audio_path, sync_data):
+    """Store the sync JSON inside the mp3's ID3 tag (a TXXX frame) so the
+    player only needs the one file -- a phone browser can't read the
+    same-named .json sitting next to the mp3 without a second pick.
+    player.html reads it back from the same frame."""
+    from mutagen.id3 import ID3, ID3NoHeaderError, TXXX, Encoding
+    try:
+        tags = ID3(str(audio_path))
+    except ID3NoHeaderError:
+        tags = ID3()
+    tags.delall(f"TXXX:{EMBED_TAG_DESC}")
+    tags.add(TXXX(encoding=Encoding.UTF8, desc=EMBED_TAG_DESC,
+                  text=[json.dumps(sync_data, ensure_ascii=False, separators=(",", ":"))]))
+    tags.save(str(audio_path), v2_version=4)
+
+
+def embed_existing(out_dir=None):
+    """Backfill: embed each <title>.json in out_dir into its <title>.mp3."""
+    out_dir = out_dir or OUTPUT_DIR
+    count = 0
+    for json_path in sorted(out_dir.glob("*.json")):
+        audio_path = json_path.with_suffix(".mp3")
+        if not audio_path.exists():
+            continue
+        with open(json_path, encoding="utf-8") as f:
+            embed_transcript(audio_path, json.load(f))
+        count += 1
+        print(f"Embedded: {audio_path.name}")
+    print(f"Done, {count} mp3 file(s) now carry their transcript.")
+
+
 def process_video(url, model_size="small", language=DEFAULT_LANGUAGE, out_dir=None, on_progress=None):
     """Full pipeline shared by the CLI (main()) and server.py's background
     job: download audio, transcribe, use manual captions for timing
@@ -433,6 +467,7 @@ def process_video(url, model_size="small", language=DEFAULT_LANGUAGE, out_dir=No
     json_path = out_dir / f"{safe_title}.json"
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(sync_data, f, ensure_ascii=False, indent=2)
+    embed_transcript(audio_path, sync_data)
 
     return {
         "title": safe_title,
@@ -444,8 +479,12 @@ def process_video(url, model_size="small", language=DEFAULT_LANGUAGE, out_dir=No
 
 
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == "--embed-existing":
+        embed_existing()
+        return
     if len(sys.argv) < 2:
         print("Usage: python yt_sync.py <youtube_url> [model_size] [language]")
+        print("       python yt_sync.py --embed-existing   (put each output/*.json into its .mp3)")
         print(f"  language: one of {list(LANGUAGES.keys())} (default: {DEFAULT_LANGUAGE})")
         sys.exit(1)
 
@@ -463,7 +502,7 @@ def main():
     print(f"Sentences: {len(sync_data['sentences'])}")
     print(f"Timing source: {'official captions (aligned)' if result['used_captions'] else 'Whisper only'}")
     print()
-    print("Open player.html and pick these two files to play.")
+    print("Open player.html and pick the mp3 (the transcript is embedded in it).")
 
 
 if __name__ == "__main__":
