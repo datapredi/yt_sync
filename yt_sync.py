@@ -110,6 +110,23 @@ def sanitize_filename(name):
     return name[:120]
 
 
+# Titles some sites (Facebook reels) return instead of a real one. Using them
+# as the file name would make every such video collide on "影片.mp3".
+GENERIC_TITLES = {"影片", "视频", "video", "reel", "reels", "facebook", "instagram"}
+
+
+def fetch_title(url):
+    """Real title, or for sites without one, "<uploader> - <caption start>"."""
+    sep = "\x1f"
+    out = run_yt_dlp(["--print", sep.join(["%(title)s", "%(uploader)s", "%(description)s", "%(id)s"]), url])
+    title, uploader, description, video_id = (out.strip().split(sep) + ["", "", "", ""])[:4]
+    if title.strip().lower() not in GENERIC_TITLES:
+        return title.strip()
+    caption = re.sub(r"\s+", " ", description if description != "NA" else "").strip()[:60]
+    parts = [p for p in (uploader if uploader != "NA" else "", caption) if p]
+    return " - ".join(parts) or f"{title.strip()} {video_id}"
+
+
 def cookies_args():
     """YouTube's bot-detection frequently 403s formats without a real,
     logged-in session. Chrome's App-Bound Encryption on Windows blocks
@@ -177,7 +194,7 @@ def download_audio(url, out_dir, language=DEFAULT_LANGUAGE):
     exactly what was reported. CBR seeking is a direct, exact
     offset = time * bitrate/8 computation, no estimation involved."""
     ensure_pot_server()
-    title = run_yt_dlp(["--get-title", url]).strip()
+    title = fetch_title(url)
     safe_title = sanitize_filename(title)
     audio_path = out_dir / f"{safe_title}.mp3"
     vtt_path = out_dir / f"{safe_title}.{language}.vtt"
