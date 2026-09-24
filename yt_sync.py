@@ -129,12 +129,29 @@ def cookies_args():
 
 
 def run_yt_dlp(args, **kwargs):
-    result = subprocess.run(
-        [sys.executable, "-m", "yt_dlp"] + cookies_args() + args,
-        capture_output=True, text=True, encoding="utf-8", **kwargs
+    def run(cookie_args):
+        return subprocess.run(
+            [sys.executable, "-m", "yt_dlp"] + cookie_args + args,
+            capture_output=True, text=True, encoding="utf-8", **kwargs
+        )
+    cookie_args = cookies_args()
+    result = run(cookie_args)
+    # macOS privacy settings block reading Chrome's data unless the app that
+    # launched this server (Terminal, VS Code...) has Full Disk Access. Fall
+    # back to cookies.txt rather than failing outright.
+    chrome_blocked = (
+        "--cookies-from-browser" in cookie_args and result.returncode != 0
+        and ("chrome cookies database" in result.stderr or "Operation not permitted" in result.stderr)
     )
+    if chrome_blocked:
+        fallback = ["--cookies", str(COOKIES_PATH)] if COOKIES_PATH.exists() else []
+        result = run(fallback)
     if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp failed:\n{result.stderr[-2000:]}")
+        hint = ""
+        if chrome_blocked:
+            hint = ("\n\n讀不到 Chrome 的登入資料：請到「系統設定 → 隱私權與安全性 → 完整磁碟取用權限」"
+                    "打開啟動 server.py 的那個 App（VS Code 或終端機），完全結束再重開那個 App，再重跑 server.py。")
+        raise RuntimeError(f"yt-dlp failed:\n{result.stderr[-2000:]}{hint}")
     return result.stdout
 
 
