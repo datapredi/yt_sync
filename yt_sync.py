@@ -47,6 +47,7 @@ import align  # noqa: E402  (reconstructed; diff+interpolation alignment logic)
 
 OUTPUT_DIR = Path(__file__).parent / "output"
 COOKIES_PATH = Path(__file__).parent / "cookies.txt"
+CHROME_DIR = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
 POT_SERVER_DIR = Path.home() / "tools" / "bgutil-ytdlp-pot-provider" / "server"
 POT_SERVER_URL = "http://127.0.0.1:4416/ping"
 
@@ -116,7 +117,14 @@ def cookies_args():
     even with the browser fully closed -- that's a deliberate Chrome
     security feature, not something worth working around. The supported
     path is a manually-exported cookies.txt (e.g. via the "Get cookies.txt
-    LOCALLY" browser extension) dropped next to this script."""
+    LOCALLY" browser extension) dropped next to this script.
+
+    macOS has no App-Bound Encryption, so there yt-dlp reads Chrome's live
+    cookies directly. That's preferred: an exported cookies.txt goes stale
+    as soon as YouTube rotates the session, and then every download fails
+    with "Sign in to confirm you're not a bot"."""
+    if sys.platform == "darwin" and CHROME_DIR.exists():
+        return ["--cookies-from-browser", "chrome"]
     return ["--cookies", str(COOKIES_PATH)] if COOKIES_PATH.exists() else []
 
 
