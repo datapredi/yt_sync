@@ -230,7 +230,21 @@
   const TRANSLATION_CACHE_LS = "yt_sync_translation_cache";
   let translationCache = {};
   try { translationCache = JSON.parse(localStorage.getItem(TRANSLATION_CACHE_LS)) || {}; } catch(e) { translationCache = {}; }
-  function saveTranslationCache(){ localStorage.setItem(TRANSLATION_CACHE_LS, JSON.stringify(translationCache)); }
+  // localStorage is shared across all of datapredi.github.io (the flashcard
+  // site lives there too), so it can be full; a throw here used to abort the
+  // paste-apply handler before it showed anything. Report it instead -- the
+  // translations still show on screen for this session either way.
+  let storageErrorShown = false;
+  function reportStorageError(err){
+    console.error(err);
+    if (storageErrorShown) return;
+    storageErrorShown = true;
+    alert('翻譯存檔失敗（瀏覽器儲存空間滿了）：' + err.message + '\n\n這次的翻譯還是會顯示，但重新整理後會不見。');
+  }
+  function saveTranslationCache(){
+    try { localStorage.setItem(TRANSLATION_CACHE_LS, JSON.stringify(translationCache)); }
+    catch (err) { reportStorageError(err); }
+  }
 
   // Words copied out of pick-mode are words the user flagged as unfamiliar
   // ("I don't know this"), so mark them persistently and highlight every
@@ -240,7 +254,10 @@
   const MARKED_WORDS_LS = "yt_sync_marked_words_v1";
   let markedWords = new Set();
   try { markedWords = new Set(JSON.parse(localStorage.getItem(MARKED_WORDS_LS)) || []); } catch(e) { markedWords = new Set(); }
-  function saveMarkedWords(){ localStorage.setItem(MARKED_WORDS_LS, JSON.stringify(Array.from(markedWords))); }
+  function saveMarkedWords(){
+    try { localStorage.setItem(MARKED_WORDS_LS, JSON.stringify(Array.from(markedWords))); }
+    catch (err) { reportStorageError(err); }
+  }
   function applyMarkedHighlights(){
     flatWords.forEach((w) => { w.el.classList.toggle('marked', markedWords.has(normalizeForSearch(w.text))); });
   }
