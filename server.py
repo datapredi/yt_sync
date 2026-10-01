@@ -2,7 +2,7 @@
 Local server for generate.html: accepts a YouTube URL from the browser,
 runs the same download+transcribe pipeline as yt_sync.py in a background
 thread, and lets the page poll job progress until the audio+transcript
-are ready in output/.
+are ready in ~/Documents/YT_S/.
 
 A browser page on its own can't call yt-dlp/ffmpeg/Whisper (no filesystem
 or process access from JS) -- this server is what actually does the work;
@@ -23,7 +23,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 import yt_sync
 
 BASE_DIR = Path(__file__).parent
-OUTPUT_DIR = BASE_DIR / "output"
+OUTPUT_DIR = yt_sync.OUTPUT_DIR
 PORT = 8765
 
 jobs = {}

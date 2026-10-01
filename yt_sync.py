@@ -45,7 +45,7 @@ sys.path.append(str(Path(__file__).parent.parent / "audio_transcript_sync"))
 sys.path.insert(0, str(Path(__file__).parent))
 import align  # noqa: E402  (reconstructed; diff+interpolation alignment logic)
 
-OUTPUT_DIR = Path(__file__).parent / "output"
+OUTPUT_DIR = Path.home() / "Documents" / "YT_S"
 COOKIES_PATH = Path(__file__).parent / "cookies.txt"
 CHROME_DIR = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
 POT_SERVER_DIR = Path.home() / "tools" / "bgutil-ytdlp-pot-provider" / "server"
@@ -500,7 +500,7 @@ def main():
         return
     if len(sys.argv) < 2:
         print("Usage: python yt_sync.py <youtube_url> [model_size] [language]")
-        print("       python yt_sync.py --embed-existing   (put each output/*.json into its .mp3)")
+        print("       python yt_sync.py --embed-existing   (put each ~/Documents/YT_S/*.json into its .mp3)")
         print(f"  language: one of {list(LANGUAGES.keys())} (default: {DEFAULT_LANGUAGE})")
         sys.exit(1)
 

@@ -68,7 +68,7 @@
 <body>
 <div class="wrap">
   <h1>🎬 YouTube 逐字稿產生器</h1>
-  <div class="sub">貼 YouTube 網址（一行一個，可以貼很多個），自動下載音檔＋用 Whisper 轉出逐字稿，存到 <code>output/</code> 資料夾，之後可以在 <code>player.html</code> 挑這兩個檔案播放。多個網址會依序處理（不是同時），避免互搶 CPU 反而更慢。</div>
+  <div class="sub">貼 YouTube 網址（一行一個，可以貼很多個），自動下載音檔＋用 Whisper 轉出逐字稿，存到 <code>~/Documents/YT_S/</code> 資料夾，之後可以在 <code>player.html</code> 挑這兩個檔案播放。多個網址會依序處理（不是同時），避免互搶 CPU 反而更慢。</div>
   <div class="sub">如果失敗訊息裡有 <code>HTTP Error 403</code>：YouTube 擋了沒有登入的下載請求。用瀏覽器分機（例如 Chrome 的「Get cookies.txt LOCALLY」）登入 YouTube 後匯出 cookies，存成 <code>cookies.txt</code> 放到 <code>yt_sync</code> 資料夾裡，就會自動套用，不用改任何設定。</div>
 
   <div class="card">
