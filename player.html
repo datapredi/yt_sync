@@ -87,6 +87,12 @@
   .word.marked{border-bottom:2px solid #e64545;}
   @media (prefers-color-scheme: dark){ .word.marked{border-bottom-color:#ff7a7a;} }
   .search-bar{display:flex; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap;}
+  .seg-hidden{display:none !important;}
+  .segment-bar{display:flex; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap; font-size:0.85rem; color:var(--muted);}
+  #segmentSelect, #segmentLenSelect{
+    flex:0 1 auto; max-width:100%; font-family:inherit; font-size:0.85rem; padding:8px 6px; border-radius:8px;
+    border:1px solid var(--border); background:var(--card); color:var(--text);
+  }
   textarea#pasteTranslationInput{
     width:100%; font-family:inherit; font-size:0.85rem; padding:10px 12px; border-radius:10px;
     border:1px solid var(--border); background:var(--card); color:var(--text); resize:vertical;
@@ -145,6 +151,15 @@
   <div class="pickers">
     <button id="btnApplyPastedTranslation" disabled>✅ 套用貼上的翻譯</button>
   </div>
+  <div class="segment-bar">
+    <span>📑 長影片分段，每段</span>
+    <select id="segmentLenSelect">
+      <option value="10">10 分鐘</option>
+      <option value="12" selected>12 分鐘</option>
+      <option value="15">15 分鐘</option>
+    </select>
+    <span>（選了某一段就只顯示、循環播放那段；分段選單在下面播放列）</span>
+  </div>
   <div class="search-bar">
     <input type="text" id="searchInput" placeholder="搜尋逐字稿裡的字..." disabled>
     <button id="btnSearchPrev" disabled>◀</button>
@@ -161,6 +176,7 @@
 <audio id="audio"></audio>
 <div class="player-bar">
   <div class="bar-title hidden" id="barTitle"></div>
+  <select id="segmentSelect" class="seg-hidden" title="只聽某一段（播到段尾會回到段頭重複）"></select>
   <button id="btnPlayPause">▶️</button>
   <input type="range" id="seekBar" min="0" max="0" step="0.01" value="0">
   <select id="speedSelect">
@@ -563,6 +579,7 @@
     syncTitle = titleFromFileName(fileName);
     updateTitle();
     renderTranscript(data);
+    buildSegments(loadSavedSegment());
     syncReady = true;
     updateStatus();
   }
@@ -718,7 +735,7 @@
 
       // Use the clamped word timings (not the raw sentence.start/end from the
       // JSON) so sentence-level highlighting stays consistent with word-level.
-      sentenceEls.push({ el: sEl, start: flatWords[sentStartIdx].start, end: flatWords[sentEndIdx].end });
+      sentenceEls.push({ el: sEl, start: flatWords[sentStartIdx].start, end: flatWords[sentEndIdx].end, startIdx: sentStartIdx, endIdx: sentEndIdx, lineEl: translationLine });
       translationRefs.push({ text: sentence.text, lineEl: translationLine });
     });
     applyMarkedHighlights();
@@ -867,6 +884,11 @@
     if (searchMatches.length === 0) return;
     if (currentMatchIdx >= 0) flatWords[searchMatches[currentMatchIdx]].el.classList.remove('search-current');
     currentMatchIdx = ((newIdx % searchMatches.length) + searchMatches.length) % searchMatches.length;
+    // 分段時搜尋還是找整支影片；結果在別段就切過去那段（不跳音檔位置）。
+    if (currentSegment >= 0) {
+      const segIdx = segmentOfWord(searchMatches[currentMatchIdx]);
+      if (segIdx >= 0 && segIdx !== currentSegment) { applySegment(segIdx, true); saveSegmentPos(); }
+    }
     const el = flatWords[searchMatches[currentMatchIdx]].el;
     el.classList.add('search-current');
     el.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -1023,6 +1045,145 @@
   // unkillable fallback; and it also acts as a watchdog -- if too long has
   // passed since tick() last actually ran while audio is still genuinely
   // playing, that means the rAF chain died, so restart it.
+  // ---- 長影片分段 ----
+  // 60 分鐘的影片一次聽完很難重複練，所以切成約 N 分鐘一段（預設 12）。
+  // 不切檔案，只是在播放器裡限制範圍：選了某一段，逐字稿只顯示那段的句子、
+  // 進度條只涵蓋那段，播到段尾自動回到段頭重複。在句子結尾切，不會把一句
+  // 話切成兩半，所以每段長度會略有不同；最後一段太短（不到三分之一段）就
+  // 併進前一段。影片本身不比一段長多少的話就不分段。
+  const SEGMENT_LEN_LS = 'yt_sync_segment_len_v1';
+  const SEGMENT_POS_LS = 'yt_sync_segment_pos_v1'; // { 影片標題: 上次聽的段落 index }
+  const segmentSelect = document.getElementById('segmentSelect');
+  const segmentLenSelect = document.getElementById('segmentLenSelect');
+  let segments = []; // { startSent, endSent, start, end }
+  let currentSegment = -1; // -1 = 全部
+  try {
+    const saved = localStorage.getItem(SEGMENT_LEN_LS);
+    if (saved && segmentLenSelect.querySelector(`option[value="${saved}"]`)) segmentLenSelect.value = saved;
+  } catch (e) {}
+
+  function segmentTitleKey(){ return audioTitle || syncTitle || ''; }
+  function loadSavedSegment(){
+    try { return (JSON.parse(localStorage.getItem(SEGMENT_POS_LS)) || {})[segmentTitleKey()]; } catch (e) { return undefined; }
+  }
+  function saveSegmentPos(){
+    const key = segmentTitleKey();
+    if (!key) return;
+    try {
+      const all = JSON.parse(localStorage.getItem(SEGMENT_POS_LS)) || {};
+      all[key] = currentSegment;
+      localStorage.setItem(SEGMENT_POS_LS, JSON.stringify(all));
+    } catch (e) { /* 存不了就算了，只是記上次聽到第幾段 */ }
+  }
+
+  function buildSegments(preferIdx){
+    segments = [];
+    const lenSec = Number(segmentLenSelect.value) * 60;
+    const n = sentenceEls.length;
+    const total = n ? sentenceEls[n - 1].end - sentenceEls[0].start : 0;
+    if (n > 0 && total > lenSec * 1.25) {
+      let startSent = 0;
+      for (let i = 0; i < n; i++) {
+        if (sentenceEls[i].end - sentenceEls[startSent].start >= lenSec || i === n - 1) {
+          segments.push({ startSent, endSent: i });
+          startSent = i + 1;
+        }
+      }
+      const last = segments[segments.length - 1];
+      if (segments.length > 1 && sentenceEls[last.endSent].end - sentenceEls[last.startSent].start < lenSec / 3) {
+        segments.pop();
+        segments[segments.length - 1].endSent = last.endSent;
+      }
+      // 段落的播放範圍：從這段第一個字開始，到下一段第一個字開始為止（不用
+      // 這段最後一個字的 end，免得切掉句尾的尾音）；最後一段播到音檔結尾。
+      segments.forEach((seg, i) => {
+        seg.start = i === 0 ? 0 : sentenceEls[seg.startSent].start;
+        seg.end = i < segments.length - 1 ? sentenceEls[segments[i + 1].startSent].start : Infinity;
+      });
+    }
+    segmentSelect.innerHTML = '';
+    segmentSelect.classList.toggle('seg-hidden', segments.length === 0);
+    if (segments.length === 0) { applySegment(-1, false); return; }
+    const allOpt = document.createElement('option');
+    allOpt.value = '-1';
+    allOpt.textContent = `全部（${segments.length} 段）`;
+    segmentSelect.appendChild(allOpt);
+    segments.forEach((seg, i) => {
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      const endLabel = isFinite(seg.end) ? formatTime(seg.end) : formatTime(sentenceEls[seg.endSent].end);
+      opt.textContent = `第 ${i + 1} 段 ${formatTime(seg.start)}–${endLabel}`;
+      segmentSelect.appendChild(opt);
+    });
+    const idx = Number.isInteger(preferIdx) && preferIdx >= -1 && preferIdx < segments.length ? preferIdx : -1;
+    applySegment(idx, false);
+  }
+
+  function segmentEnd(seg){
+    return isFinite(seg.end) ? seg.end : (isFinite(audio.duration) ? audio.duration : sentenceEls[seg.endSent].end + 1);
+  }
+
+  function segmentOfWord(wordIdx){
+    return segments.findIndex((seg) => wordIdx >= sentenceEls[seg.startSent].startIdx && wordIdx <= sentenceEls[seg.endSent].endIdx);
+  }
+
+  function applySegment(idx, seek){
+    currentSegment = idx;
+    segmentSelect.value = String(idx);
+    sentenceEls.forEach((se, i) => {
+      const hide = idx >= 0 && (i < segments[idx].startSent || i > segments[idx].endSent);
+      se.el.classList.toggle('seg-hidden', hide);
+      se.lineEl.classList.toggle('seg-hidden', hide);
+    });
+    if (idx >= 0) {
+      const seg = segments[idx];
+      if (repeatRange && segmentOfWord(repeatRange.startIdx) !== idx) clearRepeatRange();
+      seekBar.min = seg.start;
+      seekBar.max = segmentEnd(seg);
+      if (seek) audio.currentTime = seg.start;
+    } else {
+      seekBar.min = 0;
+      if (isFinite(audio.duration)) seekBar.max = audio.duration;
+    }
+    updateTimeLabel();
+  }
+
+  // 播到段尾就回段頭（句子／單字重複的優先，那個比較小範圍）。
+  function enforceSegmentLoop(){
+    if (currentSegment < 0 || repeatRange) return;
+    const seg = segments[currentSegment];
+    const t = audio.currentTime;
+    if (t >= segmentEnd(seg) - 0.05 || t < seg.start - 0.5) audio.currentTime = seg.start;
+  }
+
+  function updateTimeLabel(){
+    if (currentSegment >= 0) {
+      const seg = segments[currentSegment];
+      timeLabel.textContent = `${formatTime(Math.max(0, audio.currentTime - seg.start))} / ${formatTime(segmentEnd(seg) - seg.start)}`;
+    } else {
+      timeLabel.textContent = `${formatTime(audio.currentTime)} / ${formatTime(audio.duration)}`;
+    }
+  }
+
+  segmentSelect.addEventListener('change', () => {
+    applySegment(Number(segmentSelect.value), true);
+    saveSegmentPos();
+  });
+  segmentLenSelect.addEventListener('change', () => {
+    try { localStorage.setItem(SEGMENT_LEN_LS, segmentLenSelect.value); } catch (e) {}
+    if (sentenceEls.length === 0) return;
+    // 換每段長度：重新切，停在「目前播放位置」所在的那段。
+    const wasSegmented = currentSegment >= 0;
+    buildSegments(-1);
+    if (wasSegmented && segments.length) {
+      const t = audio.currentTime;
+      let idx = segments.findIndex((seg) => t >= seg.start && t < segmentEnd(seg));
+      if (idx < 0) idx = 0;
+      applySegment(idx, false);
+    }
+    saveSegmentPos();
+  });
+
   let lastTickTime = 0;
   function tick(){
     if (audio.paused) return;
@@ -1030,6 +1191,7 @@
     if (repeatRange && audio.currentTime >= repeatRange.playEnd) {
       audio.currentTime = repeatRange.playStart;
     }
+    enforceSegmentLoop();
     updateHighlight(audio.currentTime);
     requestAnimationFrame(tick);
   }
@@ -1037,12 +1199,14 @@
   audio.addEventListener('pause', () => { btnPlayPause.textContent = '▶️'; });
   audio.addEventListener('seeked', () => updateHighlight(audio.currentTime));
   audio.addEventListener('loadedmetadata', () => {
-    seekBar.max = audio.duration;
     audio.playbackRate = Number(speedSelect.value);
+    // 分段的最後一段播到音檔結尾，要等 duration 出來才知道多長。
+    applySegment(currentSegment, currentSegment >= 0 && audio.currentTime < segments[currentSegment].start);
   });
   audio.addEventListener('timeupdate', () => {
+    enforceSegmentLoop();
     seekBar.value = audio.currentTime;
-    timeLabel.textContent = `${formatTime(audio.currentTime)} / ${formatTime(audio.duration)}`;
+    updateTimeLabel();
     updateHighlight(audio.currentTime);
     if (!audio.paused && performance.now() - lastTickTime > 500) requestAnimationFrame(tick);
   });
