@@ -30,6 +30,7 @@ if sys.version_info < (3, 10):
 
 import json
 import re
+from datetime import date
 import subprocess
 import time
 import urllib.request
@@ -196,21 +197,44 @@ def download_audio(url, out_dir, language=DEFAULT_LANGUAGE):
     ensure_pot_server()
     title = fetch_title(url)
     safe_title = sanitize_filename(title)
-    audio_path = out_dir / f"{safe_title}.mp3"
-    vtt_path = out_dir / f"{safe_title}.{language}.vtt"
 
-    if audio_path.exists():
-        print(f"Audio already downloaded: {audio_path}")
-        return audio_path, safe_title, (vtt_path if vtt_path.exists() else None)
+    # Already downloaded (on any day, or before file names had a date)? Reuse
+    # it -- that also keeps an interrupted transcription's checkpoint, which
+    # sits next to the audio under the same name.
+    existing = find_existing_audio(out_dir, safe_title)
+    if existing:
+        print(f"Audio already downloaded: {existing}")
+        vtt_path = existing.with_name(f"{existing.stem}.{language}.vtt")
+        return existing, safe_title, (vtt_path if vtt_path.exists() else None)
 
+    # Date first ("2026-10-08 <title>.mp3") so on the phone the newest
+    # download is easy to spot even when the long title gets cut off, and
+    # sorting by name sorts by download date.
+    stem = f"{date.today().isoformat()} {safe_title}"
+    audio_path = out_dir / f"{stem}.mp3"
+    vtt_path = out_dir / f"{stem}.{language}.vtt"
     print(f"Downloading audio: {title}")
     run_yt_dlp([
         "-x", "--audio-format", "mp3", "--audio-quality", "192K",
         "--write-subs", "--sub-langs", language, "--sub-format", "vtt",
-        "-o", str(out_dir / f"{safe_title}.%(ext)s"),
+        "-o", str(out_dir / f"{stem}.%(ext)s"),
         url
     ])
     return audio_path, safe_title, (vtt_path if vtt_path.exists() else None)
+
+
+DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2} ")
+
+
+def find_existing_audio(out_dir, safe_title):
+    """<title>.mp3 or any "<date> <title>.mp3" already in out_dir."""
+    plain = out_dir / f"{safe_title}.mp3"
+    if plain.exists():
+        return plain
+    for path in sorted(out_dir.glob("*.mp3")):
+        if DATE_PREFIX_RE.match(path.name) and path.stem[11:] == safe_title:
+            return path
+    return None
 
 
 VTT_TIMESTAMP_RE = re.compile(r"-->")

@@ -527,7 +527,9 @@
   const nowTitleEl = document.getElementById('nowTitle');
   const barTitleEl = document.getElementById('barTitle');
   let audioTitle = '', syncTitle = '';
-  function titleFromFileName(name){ return name.replace(/\.[^.]+$/, ''); }
+  // yt_sync names files "2026-10-08 <title>.mp3" (date first so the newest is
+  // easy to find on the phone); the date isn't part of the video's title.
+  function titleFromFileName(name){ return name.replace(/\.[^.]+$/, '').replace(/^\d{4}-\d{2}-\d{2} /, ''); }
   function updateTitle(){
     const title = audioTitle || syncTitle;
     if (!title) return;
