@@ -85,6 +85,9 @@
   @media (prefers-color-scheme: dark){ .word.search-hit{background:#7a4fd6; color:#f2ede4;} }
   .word.search-current{outline:2px solid #7a1fd6; outline-offset:1px; text-shadow:0 0 0.4px currentColor;}
   .word.marked{border-bottom:2px solid #e64545;}
+  /* AI 挑過的重點單字／片語：淡綠底（跟紅底線＝自己複製過、紫底＝搜尋分開） */
+  .word.ai-picked{background:#cdeedd; color:#1f1b16;}
+  @media (prefers-color-scheme: dark){ .word.ai-picked{background:#25553d; color:#f2ede4;} }
   @media (prefers-color-scheme: dark){ .word.marked{border-bottom-color:#ff7a7a;} }
   .search-bar{display:flex; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap;}
   .seg-hidden{display:none !important;}
@@ -276,6 +279,71 @@
     try { localStorage.setItem(MARKED_WORDS_LS, JSON.stringify(Array.from(markedWords))); }
     catch (err) { reportStorageError(err); }
   }
+  // ---- AI 挑過的字上色 ----
+  // 每支影片（用標題當 key）記住 AI 挑過的 { term, example }，載入逐字稿時把
+  // 逐字稿裡出現的地方標成綠底。term 是字典原形（reluctantly → reluctant），
+  // 所以比對時容許字尾變化（前幾個字母一樣就算）；片語裡的 sb／sth／one's
+  // 這種代稱可以對到中間夾的 0～2 個字（make up one's mind ↔ make up my mind）。
+  const AI_PICKED_LS = 'yt_sync_ai_picked_v1';
+  function loadAiPicked(){ try { return JSON.parse(localStorage.getItem(AI_PICKED_LS)) || {}; } catch (e) { return {}; } }
+  function aiPickedForVideo(){ return loadAiPicked()[audioTitle || syncTitle || ''] || []; }
+  function rememberAiPicked(items){
+    const key = audioTitle || syncTitle || '';
+    if (!key) return;
+    const all = loadAiPicked();
+    const list = all[key] || [];
+    items.forEach((it) => { if (!list.some((x) => x.term.toLowerCase() === it.term.toLowerCase())) list.push({ term: it.term, example: it.example }); });
+    all[key] = list;
+    try { localStorage.setItem(AI_PICKED_LS, JSON.stringify(all)); } catch (e) { /* 存不了只是下次不會自動上色 */ }
+  }
+  const PLACEHOLDER_RE = /^(sb|sth|someone|somebody|something|one's|ones|oneself|someone's|somebody's)$/;
+  function termPattern(term){
+    const toks = [];
+    let gap = false;
+    String(term).split(/\s+/).forEach((raw) => {
+      const t = normalizeForSearch(raw);
+      if (!t) return;
+      if (PLACEHOLDER_RE.test(t)) { gap = true; return; }
+      toks.push({ t, gap });
+      gap = false;
+    });
+    return toks;
+  }
+  // 常見不規則動詞（片語動詞最常用到的那些）：原形 → 各種變化。
+  const IRREGULAR = {};
+  ('be:am,is,are,was,were,been,being|have:has,had,having|do:does,did,done,doing|go:goes,went,gone|come:came|make:made|take:took,taken|get:got,gotten|give:gave,given|find:found|think:thought|bring:brought|buy:bought|catch:caught|teach:taught|keep:kept|run:ran|fall:fell,fallen|break:broke,broken|hold:held|stand:stood|tell:told|say:said,says|see:saw,seen|wear:wore,worn|throw:threw,thrown|grow:grew,grown|speak:spoke,spoken|pay:paid|feel:felt|leave:left|mean:meant|lose:lost|sell:sold|send:sent|spend:spent|build:built|become:became|begin:began,begun|choose:chose,chosen|drive:drove,driven|eat:ate,eaten|forget:forgot,forgotten|hear:heard|know:knew,known|lead:led|meet:met|ride:rode,ridden|rise:rose,risen|show:showed,shown|sleep:slept|stick:stuck|swim:swam,swum|wake:woke,woken|win:won|write:wrote,written|lie:lay,lain|lay:laid|sit:sat|bite:bit,bitten|blow:blew,blown|draw:drew,drawn|fly:flew,flown|freeze:froze,frozen|hang:hung|hide:hid,hidden|shake:shook,shaken|shoot:shot|steal:stole,stolen|strike:struck|tear:tore,torn|understand:understood|wind:wound')
+    .split('|').forEach((e) => { const [base, forms] = e.split(':'); IRREGULAR[base] = forms.split(','); });
+  function tokenMatches(word, tok){
+    if (word === tok) return true;
+    if (IRREGULAR[tok] && IRREGULAR[tok].includes(word)) return true;
+    if (tok.length < 4 || word.length < 3) return false;
+    const stem = tok.slice(0, Math.max(3, tok.length - 2));
+    return word.startsWith(stem) && Math.abs(word.length - tok.length) <= 3;
+  }
+  function applyAiPickedHighlights(){
+    flatWords.forEach((w) => w.el.classList.remove('ai-picked'));
+    const norm = flatWords.map((w) => normalizeForSearch(w.text));
+    aiPickedForVideo().forEach((it) => {
+      const pat = termPattern(it.term);
+      if (!pat.length) return;
+      for (let i = 0; i < norm.length; i++) {
+        if (!tokenMatches(norm[i], pat[0].t)) continue;
+        const hit = [i];
+        let pos = i;
+        let ok = true;
+        for (let k = 1; k < pat.length && ok; k++) {
+          const maxSkip = pat[k].gap ? 2 : 0;
+          let found = -1;
+          for (let j = pos + 1; j <= pos + 1 + maxSkip && j < norm.length; j++) {
+            if (tokenMatches(norm[j], pat[k].t)) { found = j; break; }
+          }
+          if (found < 0) ok = false; else { for (let j = pos + 1; j <= found; j++) hit.push(j); pos = found; }
+        }
+        if (ok) hit.forEach((j) => flatWords[j].el.classList.add('ai-picked'));
+      }
+    });
+  }
+
   function applyMarkedHighlights(){
     flatWords.forEach((w) => { w.el.classList.toggle('marked', markedWords.has(normalizeForSearch(w.text))); });
   }
@@ -749,6 +817,7 @@
       translationRefs.push({ text: sentence.text, lineEl: translationLine });
     });
     applyMarkedHighlights();
+    applyAiPickedHighlights();
   }
 
   function onWordClick(idx){
@@ -1228,7 +1297,10 @@ ${sentences.join('\n')}` }]
     btnPickVocab.disabled = true;
     btnPickVocab.textContent = `🧠 挑選中…（約 ${vocabTargetCount()} 個）`;
     try {
-      renderVocab(await pickVocab(sentences, vocabTargetCount()));
+      const items = await pickVocab(sentences, vocabTargetCount());
+      rememberAiPicked(items);
+      applyAiPickedHighlights();
+      renderVocab(items);
     } catch (err) {
       alert('挑單字失敗：' + err.message);
     } finally {
