@@ -1087,7 +1087,19 @@
     }
     return refs.map((r) => r.text);
   }
-  async function pickVocab(sentences){
+  // 挑幾個跟長度成正比：大約每分鐘 1 個（最少 5、最多 60），所以選「全部」
+  // 跟一段一段挑，總數會差不多。
+  function vocabTargetCount(){
+    let first = 0, last = sentenceEls.length - 1;
+    if (typeof currentSegment === 'number' && currentSegment >= 0 && segments[currentSegment]) {
+      first = segments[currentSegment].startSent;
+      last = segments[currentSegment].endSent;
+    }
+    if (last < first) return 5;
+    const minutes = (sentenceEls[last].end - sentenceEls[first].start) / 60;
+    return Math.max(5, Math.min(60, Math.round(minutes)));
+  }
+  async function pickVocab(sentences, target){
     const key = getApiKey();
     if (!key) throw new Error('請先在上面輸入並儲存 Anthropic API Key');
     const item = {
@@ -1105,14 +1117,14 @@
       },
       body: JSON.stringify({
         model: 'claude-opus-4-8',
-        max_tokens: 4096,
+        max_tokens: 12000,
         output_config: { format: { type: 'json_schema', schema: {
           type: 'object', properties: { items: { type: 'array', items: item } }, required: ['items'], additionalProperties: false
         } } },
         messages: [{ role: 'user', content:
 `你是英文老師。下面是一段 YouTube 影片的英文逐字稿。學生是台灣人、英文程度中級，想把值得學的字存成單字卡。
 
-請挑出 10–20 個值得學的項目，只要這兩種：
+請挑出大約 ${target} 個值得學的項目（這段大約 ${target} 分鐘，平均每分鐘一個；真的找不到那麼多就少一點，不要拿太簡單的字硬湊），只要這兩種：
 - CEFR B1 以上（B1、B2、C1、C2）的單字；A1、A2 這種太簡單的不要
 - 道地、母語人士常用的片語／慣用說法（phrasal verb、collocation、idiom、口語說法），就算組成的字很簡單也算
 
@@ -1214,9 +1226,9 @@ ${sentences.join('\n')}` }]
     if (!sentences.length) return;
     const label = btnPickVocab.textContent;
     btnPickVocab.disabled = true;
-    btnPickVocab.textContent = '🧠 挑選中…';
+    btnPickVocab.textContent = `🧠 挑選中…（約 ${vocabTargetCount()} 個）`;
     try {
-      renderVocab(await pickVocab(sentences));
+      renderVocab(await pickVocab(sentences, vocabTargetCount()));
     } catch (err) {
       alert('挑單字失敗：' + err.message);
     } finally {
