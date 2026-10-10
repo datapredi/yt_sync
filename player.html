@@ -137,9 +137,11 @@
   <div class="note">用來點句子顯示中文翻譯。Key 只存在這台裝置的瀏覽器裡，不會上傳到任何地方。</div>
   <div class="pickers">
     <button id="btnTranslateAll" disabled>🌐 全文翻譯</button>
+    <button id="btnPickVocab" disabled>🧠 AI 挑重點單字（B1+）</button>
     <button id="btnClearTranslations" disabled>🗑️ 清除全部翻譯</button>
     <button id="btnPickMode" disabled>🔤 選字模式：關</button>
   </div>
+  <div id="vocabPanel" class="hidden" style="border:1px solid var(--border); border-radius:12px; padding:12px; margin-bottom:16px;"></div>
   <div class="note">選字模式開著的時候，點字是「選取這個字」不是重複播放；選好之後可以一次複製，貼去問 AI 或存進 Obsidian。翻譯有錯的話，點那句已顯示的中文就能清除那一句，重新翻譯。</div>
   <div class="pickers">
     <button id="btnCopyForTranslate" disabled>📋 複製待翻譯文字</button>
@@ -527,6 +529,7 @@
   const nowTitleEl = document.getElementById('nowTitle');
   const barTitleEl = document.getElementById('barTitle');
   let audioTitle = '', syncTitle = '';
+  let audioFileDate = null; // { m, d } from a "2026-10-10 <title>.mp3" file name
   // yt_sync names files "2026-10-08 <title>.mp3" (date first so the newest is
   // easy to find on the phone); the date isn't part of the video's title.
   function titleFromFileName(name){ return name.replace(/\.[^.]+$/, '').replace(/^\d{4}-\d{2}-\d{2} /, ''); }
@@ -607,6 +610,8 @@
     const jsonFile = files.find(isSyncFile);
     const file = files.find(f => !isSyncFile(f));
     if (file) {
+      const dm = file.name.match(/^(\d{4})-(\d{2})-(\d{2}) /);
+      audioFileDate = dm ? { m: Number(dm[2]), d: Number(dm[3]) } : null;
       audioTitle = titleFromFileName(file.name);
       updateTitle();
       audio.src = URL.createObjectURL(file);
@@ -641,6 +646,9 @@
     searchInput.value = '';
     searchCountEl.textContent = '';
     btnTranslateAll.disabled = false;
+    btnPickVocab.disabled = false;
+    vocabPanel.classList.add('hidden');
+    vocabPanel.innerHTML = '';
     btnClearTranslations.disabled = false;
     btnCopyForTranslate.disabled = false;
     pasteTranslationInput.disabled = false;
@@ -1047,6 +1055,176 @@
   // unkillable fallback; and it also acts as a watchdog -- if too long has
   // passed since tick() last actually ran while audio is still genuinely
   // playing, that means the rAF chain died, so restart it.
+  // ---- 🧠 AI 挑重點單字 → 送到 Flashcard ----
+  // 用播放器存的 API Key 讓 AI 從逐字稿（分段時只看目前這段）挑出 B1 以上的
+  // 單字跟道地片語，勾選後送進 Flashcard 的收件匣（同一個網域共用
+  // localStorage，key 要跟 multi.html 的 YT_INBOX_LS 一樣）。Flashcard 開頁時
+  // 會跳提示，按一下就匯入，分組名稱自動用「月/日 影片短標題」。
+  const YT_INBOX_LS = 'yt_sync_flashcard_inbox_v1';
+  const btnPickVocab = document.getElementById('btnPickVocab');
+  const vocabPanel = document.getElementById('vocabPanel');
+  function shortTitle(t){
+    t = String(t || '').replace(/【[^】]*】|\[[^\]]*\]|\([^)]*\)|（[^）]*）/g, ' ').replace(/#\S+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (/[㐀-鿿]/.test(t)) return t.slice(0, 12);
+    let words = [];
+    for (const w of t.split(' ')) {
+      if ([...words, w].join(' ').length > 30) break;
+      words.push(w);
+    }
+    // 不要停在 my／the／of 這種虛字上（「English Podcast My」）
+    while (words.length > 1 && /^(a|an|the|my|your|of|in|on|to|and|for|with|at|is|are)$/i.test(words[words.length - 1])) words.pop();
+    return words.join(' ') || t.slice(0, 30);
+  }
+  function vocabGroupName(){
+    const d = audioFileDate || { m: new Date().getMonth() + 1, d: new Date().getDate() };
+    return `${d.m}/${d.d} ${shortTitle(audioTitle || syncTitle)}`.trim();
+  }
+  function vocabSourceSentences(){
+    let refs = translationRefs;
+    if (typeof currentSegment === 'number' && currentSegment >= 0 && segments[currentSegment]) {
+      const seg = segments[currentSegment];
+      refs = translationRefs.slice(seg.startSent, seg.endSent + 1);
+    }
+    return refs.map((r) => r.text);
+  }
+  async function pickVocab(sentences){
+    const key = getApiKey();
+    if (!key) throw new Error('請先在上面輸入並儲存 Anthropic API Key');
+    const item = {
+      type: 'object',
+      properties: { term: { type: 'string' }, zh: { type: 'string' }, example: { type: 'string' } },
+      required: ['term', 'zh', 'example'], additionalProperties: false
+    };
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-4-8',
+        max_tokens: 4096,
+        output_config: { format: { type: 'json_schema', schema: {
+          type: 'object', properties: { items: { type: 'array', items: item } }, required: ['items'], additionalProperties: false
+        } } },
+        messages: [{ role: 'user', content:
+`你是英文老師。下面是一段 YouTube 影片的英文逐字稿。學生是台灣人、英文程度中級，想把值得學的字存成單字卡。
+
+請挑出 10–20 個值得學的項目，只要這兩種：
+- CEFR B1 以上（B1、B2、C1、C2）的單字；A1、A2 這種太簡單的不要
+- 道地、母語人士常用的片語／慣用說法（phrasal verb、collocation、idiom、口語說法），就算組成的字很簡單也算
+
+規則：
+- term：單字用字典原形（went → go），片語用一般寫法（例如 come up with、no wonder）；人名、地名、品牌不要
+- zh：繁體中文意思，照它在這段影片裡的用法翻
+- example：逐字稿裡含這個字／片語的那一句，照原文抄
+- 依出現順序排，同一個字不要重複
+
+逐字稿：
+${sentences.join('\n')}` }]
+      })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const data = await res.json();
+    if (data.stop_reason === 'max_tokens') throw new Error('回覆太長被截斷了，請先選一個分段再挑');
+    const block = (data.content || []).find((b) => b.type === 'text');
+    if (!block) throw new Error('沒有收到結果');
+    return JSON.parse(block.text).items || [];
+  }
+  function renderVocab(items){
+    vocabPanel.innerHTML = '';
+    vocabPanel.classList.remove('hidden');
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px;';
+    const title = document.createElement('b');
+    title.style.flex = '1 1 auto';
+    title.textContent = `🧠 挑出 ${items.length} 個（勾選要存的）`;
+    const allBtn = document.createElement('button');
+    allBtn.textContent = '全選／全不選';
+    head.append(title, allBtn);
+    vocabPanel.appendChild(head);
+    const boxes = [];
+    items.forEach((it) => {
+      const row = document.createElement('label');
+      row.style.cssText = 'display:flex; gap:8px; align-items:flex-start; padding:6px 0; border-top:1px solid var(--border); cursor:pointer;';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.style.marginTop = '4px';
+      boxes.push(cb);
+      const txt = document.createElement('div');
+      const t = document.createElement('b'); t.textContent = it.term;
+      const z = document.createElement('span'); z.textContent = '　' + it.zh;
+      const ex = document.createElement('div');
+      ex.style.cssText = 'font-size:0.82rem; color:var(--muted);';
+      ex.textContent = it.example;
+      txt.append(t, z, ex);
+      row.append(cb, txt);
+      vocabPanel.appendChild(row);
+    });
+    const groupRow = document.createElement('div');
+    groupRow.style.cssText = 'display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px;';
+    const gLabel = document.createElement('span');
+    gLabel.textContent = '📁 分組：';
+    const gInput = document.createElement('input');
+    gInput.type = 'text';
+    gInput.value = vocabGroupName();
+    gInput.style.cssText = 'flex:1 1 160px; min-width:0;';
+    const send = document.createElement('button');
+    const refreshSend = () => { send.textContent = `📤 送到 Flashcard（${boxes.filter((b) => b.checked).length}）`; };
+    refreshSend();
+    boxes.forEach((b) => b.addEventListener('change', refreshSend));
+    allBtn.addEventListener('click', () => {
+      const on = !boxes.every((b) => b.checked);
+      boxes.forEach((b) => { b.checked = on; });
+      refreshSend();
+    });
+    send.addEventListener('click', () => {
+      const chosen = items.filter((_, i) => boxes[i].checked);
+      if (!chosen.length) { alert('還沒有勾選任何一個。'); return; }
+      let inbox = [];
+      try { inbox = JSON.parse(localStorage.getItem(YT_INBOX_LS)) || []; } catch (e) { inbox = []; }
+      inbox.push({
+        id: String(Date.now()), lang: 'en', group: gInput.value.trim() || vocabGroupName(),
+        title: audioTitle || syncTitle || '', items: chosen
+      });
+      try {
+        localStorage.setItem(YT_INBOX_LS, JSON.stringify(inbox));
+      } catch (err) {
+        alert('送出失敗（瀏覽器儲存空間滿了）：' + err.message);
+        return;
+      }
+      vocabPanel.innerHTML = '';
+      const done = document.createElement('div');
+      done.textContent = `✅ 已送出 ${chosen.length} 個到 Flashcard（分組「${gInput.value.trim() || vocabGroupName()}」）。打開 Flashcard 會看到匯入提示。`;
+      const link = document.createElement('a');
+      link.href = 'https://datapredi.github.io/indonesian-flashcard/multi.html';
+      link.target = '_blank';
+      link.textContent = '→ 打開 Flashcard';
+      link.style.cssText = 'display:inline-block; margin-top:6px;';
+      vocabPanel.append(done, link);
+    });
+    groupRow.append(gLabel, gInput, send);
+    vocabPanel.appendChild(groupRow);
+  }
+  btnPickVocab.addEventListener('click', async () => {
+    const sentences = vocabSourceSentences();
+    if (!sentences.length) return;
+    const label = btnPickVocab.textContent;
+    btnPickVocab.disabled = true;
+    btnPickVocab.textContent = '🧠 挑選中…';
+    try {
+      renderVocab(await pickVocab(sentences));
+    } catch (err) {
+      alert('挑單字失敗：' + err.message);
+    } finally {
+      btnPickVocab.disabled = false;
+      btnPickVocab.textContent = label;
+    }
+  });
+
   // ---- 長影片分段 ----
   // 60 分鐘的影片一次聽完很難重複練，所以切成約 N 分鐘一段（預設 12）。
   // 不切檔案，只是在播放器裡限制範圍：選了某一段，逐字稿只顯示那段的句子、
