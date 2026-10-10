@@ -13,7 +13,19 @@ correction pass available).
 
 Usage: python yt_sync.py <youtube_url> [model_size]
 """
+import os
 import sys
+from pathlib import Path
+
+# Started with some other Python (e.g. /opt/homebrew/bin/python3.12 server.py)?
+# Its packages don't include faster_whisper etc. -- only the project venv has
+# them. Re-launch the same command with the venv's Python instead of failing
+# with "No module named 'faster_whisper'". The env var stops a re-exec loop.
+_VENV_PY = Path(__file__).resolve().parent / ".venv" / "bin" / "python"
+if (_VENV_PY.exists() and Path(sys.prefix).resolve() != _VENV_PY.parent.parent.resolve()
+        and not os.environ.get("YT_SYNC_REEXEC")):
+    os.environ["YT_SYNC_REEXEC"] = "1"
+    os.execv(str(_VENV_PY), [str(_VENV_PY)] + sys.argv)
 
 # yt-dlp dropped Python 3.9, and its last 3.9-compatible build (2025.10.14)
 # now 403s every YouTube format. macOS's system python is 3.9, so a run
