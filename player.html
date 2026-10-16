@@ -780,6 +780,13 @@
       translationLine.className = 'translation-line hidden';
       translationLine.title = '點一下清除這句翻譯，可以重新翻譯';
       transcriptEl.appendChild(translationLine);
+      // 之前翻過（API 或貼上套用）的句子，重新打開逐字稿時直接顯示，
+      // 不用再一句一句點、或再按一次全文翻譯。
+      if (translationCache[sentence.text]) {
+        translationLine.textContent = translationCache[sentence.text];
+        translationLine.dataset.loaded = '1';
+        translationLine.classList.remove('hidden');
+      }
 
       translateBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
