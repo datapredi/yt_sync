@@ -75,11 +75,12 @@ POT_SERVER_URL = "http://127.0.0.1:4416/ping"
 # split_sentences), so it's only attempted for uses_punctuation_split
 # languages; others always use the Whisper-only segment-grouped path.
 LANGUAGES = {
-    "en": {"label": "英文", "uses_punctuation_split": True, "word_join": " "},
+    "en": {"label": "英文", "uses_punctuation_split": True, "word_join": " ", "max_sentence_words": 25},
     "th": {"label": "泰文", "uses_punctuation_split": False, "word_join": ""},
     # 越南文用空格分音節，句子也用 .!? 收尾（Whisper 的越南文輸出帶標點），
     # 所以走跟英文一樣的「標點切句 + 字幕對齊」那條路。
-    "vi": {"label": "越南文", "uses_punctuation_split": True, "word_join": " "},
+    # 越南文一個音節一個「字」，上限放寬一點。
+    "vi": {"label": "越南文", "uses_punctuation_split": True, "word_join": " ", "max_sentence_words": 35},
 }
 DEFAULT_LANGUAGE = "en"
 
@@ -314,6 +315,49 @@ def group_into_sentences(words):
     return sentences
 
 
+MIN_SPLIT_CHUNK_WORDS = 8
+# Words a new clause commonly starts with -- a slightly better place to cut
+# an unpunctuated run than mid-phrase.
+SPLIT_BEFORE_WORDS = {
+    "so", "and", "but", "because", "then", "now", "okay", "ok", "if", "when",
+    "which", "or", "um", "uh", "well", "also", "actually", "like",
+}
+
+
+def split_long_sentence(group, max_words, word_key="word"):
+    """Breaks an over-long group into chunks of at most max_words.
+
+    group_into_sentences()'s pause fallback isn't always enough: in a long
+    recording Whisper can stop emitting punctuation AND return back-to-back
+    word timestamps with no gaps at all (seen on a 39-min video: a single
+    "sentence" of 650 words / 4 min, max gap 0.0s). Each cut is placed in
+    the window [MIN_SPLIT_CHUNK_WORDS, max_words] at the best-looking
+    boundary: longest pause, a Whisper segment change, a trailing comma,
+    or before a clause-starting word; ties go to the later position so
+    chunks stay as long as allowed."""
+    if len(group) <= max_words:
+        return [group]
+    out = []
+    cur = list(group)
+    while len(cur) > max_words:
+        best_j, best_score = max_words, -1.0
+        for j in range(MIN_SPLIT_CHUNK_WORDS, max_words + 1):
+            prev, nxt = cur[j - 1], cur[j]
+            score = max(0.0, nxt["start"] - prev["end"])
+            if prev.get("seg_id") is not None and nxt.get("seg_id") != prev.get("seg_id"):
+                score += 1.0
+            if re.search(r"[,;:]$", prev[word_key].strip()):
+                score += 0.3
+            if nxt[word_key].strip().lower().strip(",.!?") in SPLIT_BEFORE_WORDS:
+                score += 0.2
+            if score >= best_score:
+                best_j, best_score = j, score
+        out.append(cur[:best_j])
+        cur = cur[best_j:]
+    out.append(cur)
+    return out
+
+
 def group_by_segments(words):
     """Groups words by their original Whisper segment boundaries (natural
     speech pauses via VAD) instead of punctuation. Used for languages that
@@ -339,6 +383,8 @@ def build_sync_json(words, duration, language=DEFAULT_LANGUAGE):
     no ground truth to correct against."""
     lang_info = LANGUAGES.get(language, LANGUAGES[DEFAULT_LANGUAGE])
     groups = group_into_sentences(words) if lang_info["uses_punctuation_split"] else group_by_segments(words)
+    if lang_info.get("max_sentence_words"):
+        groups = [chunk for g in groups for chunk in split_long_sentence(g, lang_info["max_sentence_words"])]
     sentences = []
     for group in groups:
         word_entries = [
@@ -462,6 +508,41 @@ def embed_transcript(audio_path, sync_data):
     tags.save(str(audio_path), v2_version=4)
 
 
+def resplit_existing(paths=None, out_dir=None, max_words=LANGUAGES[DEFAULT_LANGUAGE]["max_sentence_words"]):
+    """Re-splits over-long sentences in transcripts already embedded in the
+    mp3s (made before split_long_sentence existed). paths limits it to those
+    files; otherwise every mp3 in out_dir. Only files that actually have a
+    sentence over max_words are rewritten."""
+    from mutagen.id3 import ID3
+    out_dir = out_dir or OUTPUT_DIR
+    targets = [Path(p) for p in paths] if paths else sorted(out_dir.glob("*.mp3"))
+    for mp3 in targets:
+        try:
+            frames = ID3(str(mp3)).getall(f"TXXX:{EMBED_TAG_DESC}")
+        except Exception:
+            continue
+        if not frames:
+            continue
+        data = json.loads(frames[0].text[0])
+        sentences = data.get("sentences", [])
+        if not any(len(s.get("words", [])) > max_words for s in sentences):
+            continue
+        new_sentences = []
+        for s in sentences:
+            for chunk in split_long_sentence(s.get("words", []), max_words, word_key="text"):
+                if not chunk:
+                    continue
+                new_sentences.append({
+                    "text": " ".join(w["text"] for w in chunk),
+                    "start": chunk[0]["start"],
+                    "end": chunk[-1]["end"],
+                    "words": chunk,
+                })
+        print(f"{mp3.name}: {len(sentences)} -> {len(new_sentences)} sentences")
+        data["sentences"] = new_sentences
+        embed_transcript(mp3, data)
+
+
 def embed_existing(out_dir=None):
     """Backfill for files made before transcripts were embedded: embed each
     <title>.json in out_dir into its <title>.mp3."""
@@ -534,9 +615,13 @@ def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "--embed-existing":
         embed_existing()
         return
+    if len(sys.argv) >= 2 and sys.argv[1] == "--resplit-existing":
+        resplit_existing(sys.argv[2:])
+        return
     if len(sys.argv) < 2:
         print("Usage: python yt_sync.py <youtube_url> [model_size] [language]")
         print("       python yt_sync.py --embed-existing   (put each ~/Documents/YT_S/*.json into its .mp3)")
+        print("       python yt_sync.py --resplit-existing [file.mp3 ...]  (break over-long sentences in the mp3s' transcripts)")
         print(f"  language: one of {list(LANGUAGES.keys())} (default: {DEFAULT_LANGUAGE})")
         sys.exit(1)
 
