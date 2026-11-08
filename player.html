@@ -194,6 +194,24 @@
 </div>
 
 <script>
+  // 手機上看不到 console：有程式錯誤時在畫面最上面顯示紅條，截圖就知道哪裡壞。
+  (function(){
+    function show(msg){
+      let bar = document.getElementById('__diagBar');
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.id = '__diagBar';
+        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#c0392b;color:#fff;font:12px/1.4 monospace;padding:6px 10px;white-space:pre-wrap;max-height:40vh;overflow:auto';
+        bar.addEventListener('click', () => bar.remove());
+        (document.body || document.documentElement).appendChild(bar);
+      }
+      bar.textContent += (bar.textContent ? '\n' : '') + '⚠️ ' + msg;
+    }
+    window.addEventListener('error', (e) => show((e.message || 'error') + (e.lineno ? ' @' + e.lineno + ':' + e.colno : '')));
+    window.addEventListener('unhandledrejection', (e) => show('Promise: ' + ((e.reason && e.reason.message) || e.reason)));
+  })();
+</script>
+<script>
   const audioInput = document.getElementById('audioInput');
   const statusEl = document.getElementById('status');
   const repeatStatusEl = document.getElementById('repeatStatus');
@@ -1520,6 +1538,11 @@ ${sentences.join('\n')}` }]
   // 播到段尾就回段頭（句子／單字重複的優先，那個比較小範圍）。
   function enforceSegmentLoop(){
     if (currentSegment < 0 || repeatRange) return;
+    // iPhone／iPad 的 Safari 跳到很後面要一點時間，跳的過程中 currentTime
+    // 還是舊的（例如 0）。以前每一格畫面都再設一次 currentTime，等於一直
+    // 打斷上一次的跳轉，永遠跳不過去：選第 3 段還是從頭播，高亮停在被藏
+    // 起來的第 1 段，看起來整個沒反應。跳轉還沒完成就先等。
+    if (audio.seeking) return;
     const seg = segments[currentSegment];
     const t = audio.currentTime;
     if (t >= segmentEnd(seg) - 0.05 || t < seg.start - 0.5) audio.currentTime = seg.start;
@@ -1566,7 +1589,9 @@ ${sentences.join('\n')}` }]
   }
   audio.addEventListener('play', () => { btnPlayPause.textContent = '⏸️'; lastTickTime = performance.now(); requestAnimationFrame(tick); });
   audio.addEventListener('pause', () => { btnPlayPause.textContent = '▶️'; });
-  audio.addEventListener('seeked', () => updateHighlight(audio.currentTime));
+  audio.addEventListener('seeked', () => { enforceSegmentLoop(); updateHighlight(audio.currentTime); });
+  // iOS 有時候按播放會把還沒生效的跳轉丟掉、從 0 開始播，開始播之後再檢查一次。
+  audio.addEventListener('playing', enforceSegmentLoop);
   audio.addEventListener('loadedmetadata', () => {
     audio.playbackRate = Number(speedSelect.value);
     // 分段的最後一段播到音檔結尾，要等 duration 出來才知道多長。
@@ -1582,7 +1607,7 @@ ${sentences.join('\n')}` }]
 
   btnPlayPause.addEventListener('click', () => {
     if (!audioReady) return;
-    if (audio.paused) audio.play(); else audio.pause();
+    if (audio.paused) { enforceSegmentLoop(); audio.play(); } else audio.pause();
   });
   seekBar.addEventListener('input', () => {
     audio.currentTime = Number(seekBar.value);
