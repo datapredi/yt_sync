@@ -140,7 +140,7 @@
   <div class="note">用來點句子顯示中文翻譯。Key 只存在這台裝置的瀏覽器裡，不會上傳到任何地方。</div>
   <div class="pickers">
     <button id="btnTranslateAll" disabled>🌐 全文翻譯</button>
-    <button id="btnPickVocab" disabled>🧠 AI 挑重點單字（B1+）</button>
+    <button id="btnPickVocab" disabled>🧠 AI 挑重點單字</button>
     <button id="btnClearTranslations" disabled>🗑️ 清除全部翻譯</button>
     <button id="btnPickMode" disabled>🔤 選字模式：關</button>
   </div>
@@ -1164,8 +1164,9 @@
   // passed since tick() last actually ran while audio is still genuinely
   // playing, that means the rAF chain died, so restart it.
   // ---- 🧠 AI 挑重點單字 → 送到 Flashcard ----
-  // 用播放器存的 API Key 讓 AI 從逐字稿（分段時只看目前這段）挑出 B1 以上的
-  // 單字跟道地片語，勾選後送進 Flashcard 的收件匣（同一個網域共用
+  // 用播放器存的 API Key 讓 AI 從逐字稿（分段時只看目前這段）挑出三類：
+  // 🆕 生字（常用的 B1～C1，不要冷僻字）、🔄 熟字新義（簡單字的另一個意思）、
+  // 💬 口語說法。不用 CEFR 級數硬切，因為簡單字的新用法反而最常不熟。勾選後送進 Flashcard 的收件匣（同一個網域共用
   // localStorage，key 要跟 multi.html 的 YT_INBOX_LS 一樣）。Flashcard 開頁時
   // 會跳提示，按一下就匯入，分組名稱自動用「月/日 影片短標題」。
   const YT_INBOX_LS = 'yt_sync_flashcard_inbox_v1';
@@ -1212,8 +1213,8 @@
     if (!key) throw new Error('請先在上面輸入並儲存 Anthropic API Key');
     const item = {
       type: 'object',
-      properties: { term: { type: 'string' }, zh: { type: 'string' }, example: { type: 'string' } },
-      required: ['term', 'zh', 'example'], additionalProperties: false
+      properties: { kind: { type: 'string', enum: ['new', 'meaning', 'spoken'] }, term: { type: 'string' }, zh: { type: 'string' }, example: { type: 'string' } },
+      required: ['kind', 'term', 'zh', 'example'], additionalProperties: false
     };
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -1232,13 +1233,15 @@
         messages: [{ role: 'user', content:
 `你是英文老師。下面是一段 YouTube 影片的英文逐字稿。學生是台灣人、英文程度中級，想把值得學的字存成單字卡。
 
-請挑出大約 ${target} 個值得學的項目（這段大約 ${target} 分鐘，平均每分鐘一個；真的找不到那麼多就少一點，不要拿太簡單的字硬湊），只要這兩種：
-- CEFR B1 以上（B1、B2、C1、C2）的單字；A1、A2 這種太簡單的不要
-- 道地、母語人士常用的片語／慣用說法（phrasal verb、collocation、idiom、口語說法），就算組成的字很簡單也算
+請挑出大約 ${target} 個值得學的項目（這段大約 ${target} 分鐘，平均每分鐘一個；真的找不到那麼多就少一點，不要拿學生早就會的字硬湊）。不要用 CEFR 級數硬切：學生常常是「字看起來很簡單，但這個用法不熟」，太冷僻的難字反而用不到。分成三類，用 kind 標示：
+- new（生字）：學生大概不認識、但日常或新聞常用的字（大約 B1～C1）。太冷僻、太學術、太專業的字（例如 C2、只有這個領域才用的術語）不要
+- meaning（熟字新義）：學生一定認識的簡單字，但在這裡是另一個意思或用法，例如 pretty good 的 pretty（滿）、run a shop 的 run（經營）、what's the catch 的 catch（陷阱）、I'm down 的 down（願意加入）
+- spoken（口語說法）：母語人士講話常用的片語、慣用語、口頭禪、搭配詞，就算每個字都很簡單也算，例如 end up、figure out、no way、I mean、kind of、it's not a big deal
+三類都要注意，尤其 meaning 跟 spoken 不要漏掉；一個項目只放一類。
 
 規則：
 - term：單字用字典原形（went → go），片語用一般寫法（例如 come up with、no wonder）；人名、地名、品牌不要
-- zh：繁體中文意思，照它在這段影片裡的用法翻
+- zh：繁體中文意思，照它在這段影片裡的用法翻（meaning 類一定要翻成這裡的新意思，不是常見的那個意思）
 - example：逐字稿裡含這個字／片語的那一句，照原文抄
 - 依出現順序排，同一個字不要重複
 
@@ -1318,7 +1321,17 @@ ${sentences.join('\n')}` }]
     });
     refreshVocabSend();
   }
+  const VOCAB_KINDS = [
+    ['new', '🆕 生字'],
+    ['meaning', '🔄 熟字新義'],
+    ['spoken', '💬 口語說法']
+  ];
   function renderVocab(items){
+    // 依類別分組，同一類裡維持出現順序（boxes 的 index 跟排序後的 items 對齊）
+    const order = { new: 0, meaning: 1, spoken: 2 };
+    items = items.map((it, i) => [it, i])
+      .sort((a, b) => ((order[a[0].kind] ?? 3) - (order[b[0].kind] ?? 3)) || (a[1] - b[1]))
+      .map((x) => x[0]);
     vocabAiItems = items;
     vocabPanel.innerHTML = '';
     vocabPanel.classList.remove('hidden');
@@ -1333,7 +1346,16 @@ ${sentences.join('\n')}` }]
     vocabPanel.appendChild(head);
     const boxes = [];
     vocabAiBoxes = boxes;
+    let lastKind = null;
     items.forEach((it) => {
+      if (it.kind !== lastKind) {
+        lastKind = it.kind;
+        const kh = document.createElement('div');
+        const label = (VOCAB_KINDS.find((k) => k[0] === it.kind) || [, '其他'])[1];
+        kh.style.cssText = 'margin-top:10px; padding-top:8px; border-top:2px solid var(--border); font-weight:700;';
+        kh.textContent = `${label}（${items.filter((x) => x.kind === it.kind).length}）`;
+        vocabPanel.appendChild(kh);
+      }
       const row = document.createElement('label');
       row.style.cssText = 'display:flex; gap:8px; align-items:flex-start; padding:6px 0; border-top:1px solid var(--border); cursor:pointer;';
       const cb = document.createElement('input');
