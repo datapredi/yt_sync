@@ -46,7 +46,7 @@ def run_job(job_id, url, model_size, language):
             stage="done", message="完成！", done=True,
             result={
                 "title": result["title"],
-                "audio_file": result["audio_path"].name,
+                "audio_file": str(result["audio_path"].relative_to(OUTPUT_DIR)),
                 "sentences": len(sync_data["sentences"]),
                 "duration": sync_data["duration"],
                 "used_captions": result["used_captions"],

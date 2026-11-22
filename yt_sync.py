@@ -141,6 +141,27 @@ def fetch_title(url):
     return " - ".join(parts) or f"{title.strip()} {video_id}"
 
 
+def channel_folder(url):
+    """Subfolder name under YT_S for this video. There are
+    only four folders: elon (any Elon Musk clip, whatever channel), dan_j,
+    lao (@profe_lao), other (everything else or lookup failed)."""
+    sep = "\x1f"
+    try:
+        out = run_yt_dlp(["--skip-download", "--no-warnings", "--print",
+                          sep.join(["%(channel)s", "%(uploader)s", "%(title)s"]), url])
+        channel, uploader, title = (out.strip().splitlines()[-1].split(sep) + ["", "", ""])[:3]
+    except Exception:
+        return "other"
+    if "elon musk" in title.lower():
+        return "elon"
+    name = channel if channel not in ("", "NA") else uploader
+    if name.strip() == "Dan John":
+        return "dan_j"
+    if name.strip() == "English with Lauren Taylor":  # @profe_lao
+        return "lao"
+    return "other"
+
+
 def cookies_args():
     """YouTube's bot-detection frequently 403s formats without a real,
     logged-in session. Chrome's App-Bound Encryption on Windows blocks
@@ -565,6 +586,9 @@ def process_video(url, model_size="small", language=DEFAULT_LANGUAGE, out_dir=No
     correction when available, write the sync JSON. on_progress(msg) is
     called at each stage for callers that want to surface live status."""
     out_dir = out_dir or OUTPUT_DIR
+    if Path(out_dir).resolve() == OUTPUT_DIR.resolve():
+        # 每個頻道一個子資料夾，YT_S 最上層不再堆一大堆檔案
+        out_dir = OUTPUT_DIR / channel_folder(url)
     out_dir.mkdir(parents=True, exist_ok=True)
     lang_info = LANGUAGES.get(language, LANGUAGES[DEFAULT_LANGUAGE])
 
