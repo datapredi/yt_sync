@@ -716,6 +716,11 @@
   });
 
   function renderTranscript(data){
+    // 下載時已經預先翻好（zh_tool.py 寫進 mp3 的 sentences[].zh）就直接用，
+    // 不用 API Key、不花錢，也不用按「全文翻譯」。
+    data.sentences.forEach((s) => {
+      if (s.zh && !translationCache[s.text]) translationCache[s.text] = s.zh;
+    });
     transcriptEl.innerHTML = '';
     flatWords = [];
     sentenceEls = [];
