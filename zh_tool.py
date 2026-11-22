@@ -1,4 +1,4 @@
-"""Pre-translate a yt_sync mp3's transcript into Chinese, stored inside the mp3.
+"""Pre-translate a yt_sync mp3's transcript (or a Power English *_sync.json) into Chinese, stored inside the mp3.
 
 The translation itself is done by an AI agent (Codex / Claude); this tool only
 moves text in and out of the mp3's ID3 TXXX:yt_sync frame so the agent never
@@ -22,6 +22,8 @@ TAG = "yt_sync"
 
 
 def load(mp3):
+    if str(mp3).lower().endswith(".json"):  # Power English 課程的 *_sync.json
+        return None, json.loads(Path(mp3).read_text(encoding="utf-8"))
     tags = ID3(str(mp3))
     frames = tags.getall(f"TXXX:{TAG}")
     if not frames:
@@ -30,6 +32,9 @@ def load(mp3):
 
 
 def save(mp3, tags, data):
+    if str(mp3).lower().endswith(".json"):
+        Path(mp3).write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        return
     tags.delall(f"TXXX:{TAG}")
     tags.add(TXXX(encoding=Encoding.UTF8, desc=TAG,
                   text=[json.dumps(data, ensure_ascii=False, separators=(",", ":"))]))
